@@ -25,4 +25,16 @@ spec:
         imagePullPolicy: Never
 
         ports:
-        - containerPort: 5000
+        - name: http
+          containerPort: 5000
+
+        # Resource limits are required for cpu_percent / memory_percent to
+        # mean anything -- Prometheus can only report raw usage without them.
+        # prometheus_source.py divides usage by these limits to get a real %.
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
