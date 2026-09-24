@@ -35,6 +35,31 @@ class Incident:
     anomalies: list[Anomaly] = field(default_factory=list)
     max_severity: str = "low"
     avg_confidence: float = 0.0
+    detection: str = "ml"  # "ml" (Isolation Forest), "rule" (k8s_signals only) or "ml+rule"
+    k8s_signals: list[dict] = field(default_factory=list)  # summaries from k8s_signals.py
+
+    @classmethod
+    def from_dict(cls, doc: dict) -> "Incident":
+        """Rebuilds an Incident from its MongoDB document (the inverse of to_dict)."""
+        return cls(
+            incident_id=doc["incident_id"],
+            start_time=pd.Timestamp(doc["start_time"]),
+            end_time=pd.Timestamp(doc["end_time"]),
+            anomalies=[
+                Anomaly(
+                    timestamp=pd.Timestamp(a["timestamp"]),
+                    metric_snapshot=a["metrics"],
+                    anomaly_score=float("nan"),  # not stored
+                    confidence=a["confidence"],
+                    severity=a["severity"],
+                )
+                for a in doc.get("anomalies", [])
+            ],
+            max_severity=doc["max_severity"],
+            avg_confidence=doc["avg_confidence"],
+            detection=doc.get("detection", "ml"),
+            k8s_signals=doc.get("k8s_signals", []),
+        )
 
     def to_dict(self) -> dict:
         """Flat representation, ready to insert into MongoDB."""
@@ -54,6 +79,8 @@ class Incident:
                 }
                 for a in self.anomalies
             ],
+            "detection": self.detection,
+            "k8s_signals": self.k8s_signals,
         }
 
 

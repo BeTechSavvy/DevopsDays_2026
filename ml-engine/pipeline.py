@@ -5,10 +5,16 @@ Ties the pieces together end-to-end against LIVE data, the same flow
 each module's __main__ block already ran against generate_mock_metrics():
 
     PrometheusClient -> AnomalyDetector -> CorrelationEngine -> IncidentStore -> RCAEngine
+                     -> k8s_signals ----------^
 
-Every newly saved incident is sent to RCAEngine (Gemini + ChromaDB) and the
-result is attached to its MongoDB document under `diagnosis`. RCA is
-best-effort: if Gemini fails, the incident is kept without a diagnosis.
+Kubernetes state signals (restarts, OOMKilled, CrashLoopBackOff, image pull
+errors, unavailable replicas) are attached to overlapping ML incidents, and
+also raise rule-based incidents on their own when the ML model flags nothing.
+An incident overlapping one already stored is merged into it, not duplicated.
+
+Every new incident is sent to RCAEngine (Gemini + ChromaDB) and the result is
+attached to its MongoDB document under `diagnosis`. RCA is best-effort: if
+Gemini fails, the incident is kept without a diagnosis.
 
 Usage:
     python pipeline.py                 # one-shot pass over the baseline window
@@ -24,8 +30,9 @@ from datetime import timedelta
 import requests
 
 from anomaly_detector import AnomalyDetector
-from correlation_engine import CorrelationEngine
+from correlation_engine import CorrelationEngine, Incident
 from incident_store import IncidentStore
+from k8s_signals import attach_k8s_signals, fetch_k8s_signals
 from prometheus_source import PrometheusClient
 
 FEATURE_COLUMNS = ["cpu_percent", "memory_percent", "error_rate"]
@@ -80,24 +87,42 @@ def run_once(client, detector, engine, store, minutes_back, since=None, rca=None
     df = client.get_metrics_dataframe(minutes_back=minutes_back)
     if since is not None:
         df = df[df["timestamp"] > since]
+    signals = fetch_k8s_signals(client, minutes_back=minutes_back, since=since)
 
-    if df.empty:
+    if df.empty and not signals:
         print("No new data points from Prometheus this cycle.")
         return since
 
-    anomalies = detector.score_batch(df)
+    anomalies = detector.score_batch(df) if not df.empty else []
     incidents = engine.correlate(anomalies)
+    rule_incidents = attach_k8s_signals(incidents, signals, engine.time_window)
+    incidents += rule_incidents
 
-    if incidents:
-        saved = store.save_many(incidents)
-        print(f"[{df['timestamp'].max()}] {len(anomalies)} anomalies -> {saved} incidents saved.")
-        if rca is not None:
-            diagnosed = diagnose_incidents(rca, store, incidents)
-            print(f"RCA: {diagnosed}/{len(incidents)} incidents diagnosed.")
-    else:
-        print(f"[{df['timestamp'].max()}] {len(df)} points scored, no anomalies.")
+    last_seen = df["timestamp"].max() if not df.empty else signals[-1].timestamp
 
-    return df["timestamp"].max()
+    if not incidents:
+        print(f"[{last_seen}] {len(df)} points scored, no anomalies, no Kubernetes signals.")
+        return last_seen
+
+    new, merged, to_diagnose = 0, 0, []
+    for incident in incidents:
+        doc, needs_diagnosis = store.save_or_merge(incident, engine.time_window)
+        if doc["incident_id"] == incident.incident_id:
+            new += 1
+        else:
+            merged += 1
+        if needs_diagnosis:
+            to_diagnose.append(Incident.from_dict(doc))
+
+    print(
+        f"[{last_seen}] {len(anomalies)} anomalies, {len(signals)} k8s signal samples "
+        f"({len(rule_incidents)} rule-only incidents) -> {new} new, {merged} merged into existing incidents."
+    )
+    if rca is not None and to_diagnose:
+        diagnosed = diagnose_incidents(rca, store, to_diagnose)
+        print(f"RCA: {diagnosed}/{len(to_diagnose)} incidents diagnosed.")
+
+    return last_seen
 
 
 def main():

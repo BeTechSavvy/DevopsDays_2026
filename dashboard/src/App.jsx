@@ -9,6 +9,30 @@ const SEVERITY_COLORS = {
   low: '#4FB8AF',
 }
 
+const DETECTION_LABELS = {
+  ml: 'ML',
+  rule: 'Rule',
+  'ml+rule': 'ML+Rule',
+}
+
+// Same reasons ml-engine/k8s_signals.py treats as high severity
+const HIGH_SEVERITY_REASONS = ['OOMKilled', 'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError']
+
+const shortTime = (t) => t?.split('.')[0] || t
+
+// Plain-English version of one k8s_signals entry (mirrors describe_signal in k8s_signals.py)
+function describeSignal(s) {
+  const window = `${shortTime(s.first_seen)} → ${shortTime(s.last_seen)}`
+  if (s.kind === 'restart') {
+    const n = Math.round(s.value)
+    return `Container ${s.target} restarted ${n} time${n === 1 ? '' : 's'} (last terminated: ${s.reason}), ${window}`
+  }
+  if (s.kind === 'waiting') {
+    return `Container ${s.target} stuck waiting in ${s.reason}, ${window}`
+  }
+  return `Deployment ${s.target} had up to ${Math.round(s.value)} unavailable replica(s), ${window}`
+}
+
 function ConfidenceMeter({ value, color }) {
   const segments = 10
   const filled = Math.round(value * segments)
@@ -67,6 +91,8 @@ function DetailPanel({ incident }) {
 
   const color = SEVERITY_COLORS[incident.max_severity] || SEVERITY_COLORS.low
   const diagnosis = incident.diagnosis
+  const detection = incident.detection || 'ml' // incidents saved before k8s signals existed
+  const signals = incident.k8s_signals || []
 
   return (
     <div className="detail-panel">
@@ -75,17 +101,46 @@ function DetailPanel({ incident }) {
           <span className="detail-eyebrow">incident</span>
           <h2 className="detail-id">{incident.incident_id}</h2>
         </div>
-        <span className="severity-badge large" style={{ color, background: `${color}1a` }}>
-          {incident.max_severity}
-        </span>
+        <div className="detail-badges">
+          <span className="detection-badge">{DETECTION_LABELS[detection] || detection}</span>
+          <span className="severity-badge large" style={{ color, background: `${color}1a` }}>
+            {incident.max_severity}
+          </span>
+        </div>
       </div>
 
-      <ConfidenceMeter value={incident.avg_confidence} color={color} />
+      {detection === 'rule' ? (
+        <p className="rule-match">rule match · no ML confidence score</p>
+      ) : (
+        <ConfidenceMeter value={incident.avg_confidence} color={color} />
+      )}
 
       <div className="detail-section">
         <span className="detail-label">Window</span>
         <p className="detail-value mono">{incident.start_time} &rarr; {incident.end_time}</p>
       </div>
+
+      {signals.length > 0 && (
+        <div className="detail-section">
+          <span className="detail-label">Kubernetes signals ({signals.length})</span>
+          <div className="signal-list">
+            {signals.map((s, i) => {
+              const reasonColor =
+                HIGH_SEVERITY_REASONS.includes(s.reason) || s.kind === 'replicas_unavailable'
+                  ? SEVERITY_COLORS.high
+                  : SEVERITY_COLORS.medium
+              return (
+                <div key={i} className="signal-item">
+                  <span className="signal-reason" style={{ color: reasonColor, background: `${reasonColor}1a` }}>
+                    {s.reason}
+                  </span>
+                  <span className="detail-value muted">{describeSignal(s)}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {diagnosis ? (
         <>
@@ -114,6 +169,9 @@ function DetailPanel({ incident }) {
 
       <div className="detail-section">
         <span className="detail-label">Raw anomalies ({incident.anomaly_count})</span>
+        {incident.anomaly_count === 0 && (
+          <p className="detail-value muted">No metric anomalies — detected from cluster state.</p>
+        )}
         <div className="anomaly-list">
           {incident.anomalies?.map((a, i) => (
             <div key={i} className="anomaly-item">

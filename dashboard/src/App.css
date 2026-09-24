@@ -264,6 +264,53 @@ body {
   margin: 2px 0 0;
 }
 
+.detail-badges {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.detection-badge {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 4px 10px;
+  border-radius: 4px;
+  color: var(--accent-blue);
+  background: rgba(91, 141, 239, 0.1);
+  border: 1px solid rgba(91, 141, 239, 0.25);
+}
+
+.rule-match {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 22px;
+}
+
+.signal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.signal-item .detail-value {
+  font-size: 13px;
+}
+
+.signal-reason {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
 .confidence-meter {
   display: flex;
   align-items: center;

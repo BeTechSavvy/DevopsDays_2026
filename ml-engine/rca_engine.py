@@ -29,21 +29,35 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from correlation_engine import Incident
 from incident_store import IncidentStore
+from k8s_signals import describe_signal
 
 load_dotenv()  # reads GOOGLE_API_KEY from your .env file
 
 CHROMA_PATH = "./chroma_store"
 COLLECTION_NAME = "past_incidents"
 
+DETECTION_LABELS = {
+    "ml": "Isolation Forest on cpu/memory/error-rate",
+    "rule": "Kubernetes state rules (the ML model flagged nothing)",
+    "ml+rule": "Isolation Forest on cpu/memory/error-rate AND Kubernetes state rules",
+}
+
 
 SYSTEM_PROMPT = """You are an SRE (Site Reliability Engineering) assistant helping
 diagnose Kubernetes cluster incidents. You will be given:
-1. Details of a CURRENT incident (anomalous metrics detected by an ML model)
+1. Details of a CURRENT incident (anomalous metrics detected by an ML model),
+   possibly with Kubernetes state signals from kube-state-metrics: container
+   restarts and their termination reason (e.g. OOMKilled, Error), containers
+   stuck waiting (e.g. CrashLoopBackOff, ImagePullBackOff, ErrImagePull), and
+   deployments with unavailable replicas
 2. Similar PAST incidents retrieved from history, if any exist
 
 Your job is to produce a clear, human-readable diagnosis. Be concise and
 practical - an engineer will read this under time pressure during an
 active incident. Do not invent facts not supported by the data given.
+Kubernetes signals are direct evidence of what the cluster observed - when
+present, name them explicitly in the root cause (e.g. which container was
+OOMKilled) rather than inferring the cause from metrics alone.
 
 Respond ONLY in this exact JSON format, nothing else:
 {
@@ -97,10 +111,21 @@ class RCAEngine:
             metrics_lines.append(
                 f"  - at {a.timestamp}: {a.metric_snapshot} (severity={a.severity})"
             )
+        anomalies_block = (
+            "Anomalies:\n" + "\n".join(metrics_lines)
+            if metrics_lines
+            else "Anomalies: none - the ML model saw nothing unusual in cpu/memory/error-rate."
+        )
+        signals_block = (
+            "\nKubernetes signals:\n" + "\n".join(f"  - {describe_signal(s)}" for s in incident.k8s_signals)
+            if incident.k8s_signals
+            else ""
+        )
         return (
             f"Incident {incident.incident_id}: {incident.start_time} to {incident.end_time}\n"
+            f"Detected by: {DETECTION_LABELS.get(incident.detection, incident.detection)}\n"
             f"Max severity: {incident.max_severity}, avg confidence: {incident.avg_confidence:.2f}\n"
-            f"Anomalies:\n" + "\n".join(metrics_lines)
+            f"{anomalies_block}{signals_block}"
         )
 
     def _retrieve_similar_incidents(self, incident_text: str, n_results: int = 3) -> list[str]:
@@ -121,7 +146,8 @@ class RCAEngine:
 
     def _store_incident(self, incident: Incident, incident_text: str):
         """Saves this incident into Chroma so future incidents can retrieve it."""
-        self.collection.add(
+        # upsert: a merged incident can be re-diagnosed under the same id
+        self.collection.upsert(
             documents=[incident_text],
             ids=[incident.incident_id],
             metadatas=[{

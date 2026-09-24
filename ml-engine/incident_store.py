@@ -18,7 +18,9 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from datetime import timedelta
 
-from correlation_engine import Incident
+import pandas as pd
+
+from correlation_engine import CorrelationEngine, Incident
 
 
 MONGO_URI = "mongodb://localhost:27017"
@@ -67,6 +69,40 @@ class IncidentStore:
             self.save_incident(incident)
         return len(incidents)
 
+    def find_overlapping(self, start, end, window: timedelta) -> dict | None:
+        """Most recent stored incident whose time range is within `window` of [start, end]."""
+        lo, hi = pd.Timestamp(start) - window, pd.Timestamp(end) + window
+        for doc in self.collection.find({}, {"_id": 0}).sort("start_time", -1).limit(100):
+            if pd.Timestamp(doc["start_time"]) <= hi and pd.Timestamp(doc["end_time"]) >= lo:
+                return doc
+        return None
+
+    def save_or_merge(self, incident: Incident, window: timedelta) -> tuple[dict, bool]:
+        """
+        Saves a new incident, or folds it into an existing one that overlaps
+        in time -- re-running the pipeline over the same window, or a failure
+        that lasts across several --loop polls, is the SAME incident, not a
+        new one each time.
+
+        Returns (stored_doc, needs_diagnosis). needs_diagnosis is True for a
+        new incident, or a merged one that has no diagnosis yet or just
+        gained a kind of Kubernetes failure it didn't have before.
+        """
+        doc = incident.to_dict()
+        existing = self.find_overlapping(incident.start_time, incident.end_time, window)
+        if existing is None:
+            self.collection.update_one({"incident_id": doc["incident_id"]}, {"$set": doc}, upsert=True)
+            return doc, True
+
+        merged = _merge_incident_docs(existing, doc)
+        self.collection.update_one({"incident_id": merged["incident_id"]}, {"$set": merged})
+
+        def reasons(d):
+            return {(s["kind"], s["reason"]) for s in d.get("k8s_signals", [])}
+
+        needs_diagnosis = "diagnosis" not in existing or bool(reasons(doc) - reasons(existing))
+        return merged, needs_diagnosis
+
     def save_diagnosis(self, incident_id: str, diagnosis: dict) -> None:
         """
         Attaches an RCA/LLM diagnosis to an existing incident document.
@@ -88,6 +124,43 @@ class IncidentStore:
         """e.g. get_by_severity('high') for only the serious ones."""
         cursor = self.collection.find({"max_severity": severity})
         return list(cursor)
+
+
+def _merge_incident_docs(old: dict, new: dict) -> dict:
+    """Combines two incident documents describing the same event. Keeps old's id."""
+    anomalies = {a["timestamp"]: a for a in old.get("anomalies", []) + new["anomalies"]}
+    anomalies = [anomalies[ts] for ts in sorted(anomalies, key=pd.Timestamp)]
+
+    # Re-scanning an overlapping window sees the same restarts again, so
+    # counts take the max rather than the sum.
+    signals: dict[tuple, dict] = {}
+    for s in old.get("k8s_signals", []) + new["k8s_signals"]:
+        key = (s["kind"], s["target"], s["reason"])
+        if key not in signals:
+            signals[key] = dict(s)
+            continue
+        g = signals[key]
+        g["first_seen"] = min(g["first_seen"], s["first_seen"], key=pd.Timestamp)
+        g["last_seen"] = max(g["last_seen"], s["last_seen"], key=pd.Timestamp)
+        g["value"] = max(g["value"], s["value"])
+
+    parts = set(old.get("detection", "ml").split("+")) | set(new["detection"].split("+"))
+    rank = CorrelationEngine._SEVERITY_RANK
+
+    return {
+        "incident_id": old["incident_id"],
+        "start_time": min(old["start_time"], new["start_time"], key=pd.Timestamp),
+        "end_time": max(old["end_time"], new["end_time"], key=pd.Timestamp),
+        "anomaly_count": len(anomalies),
+        "max_severity": max(old["max_severity"], new["max_severity"], key=rank.__getitem__),
+        "avg_confidence": (
+            round(sum(a["confidence"] for a in anomalies) / len(anomalies), 3)
+            if anomalies else max(old["avg_confidence"], new["avg_confidence"])
+        ),
+        "anomalies": anomalies,
+        "detection": "+".join(p for p in ("ml", "rule") if p in parts),
+        "k8s_signals": list(signals.values()),
+    }
 
 
 if __name__ == "__main__":
