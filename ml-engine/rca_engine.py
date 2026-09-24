@@ -131,11 +131,14 @@ class RCAEngine:
             }],
         )
 
-    def diagnose(self, incident: Incident) -> dict:
+    def diagnose(self, incident: Incident, persist: bool = True) -> dict:
         """
         Main entry point. Returns a dict with summary, likely_root_cause,
         confidence_reasoning, and suggested_fix - ready to hand to the
         React dashboard.
+
+        persist=False skips the MongoDB write, for callers (pipeline.py)
+        that check the result first and save it themselves.
         """
         incident_text = self._incident_to_text(incident)
         similar_past = self._retrieve_similar_incidents(incident_text)
@@ -191,7 +194,7 @@ class RCAEngine:
 
         # Persist to MongoDB: the raw incident first (so it exists as a
         # document), then attach the diagnosis to it.
-        if self.mongo_available:
+        if persist and self.mongo_available:
             self.store.save_incident(incident)
             self.store.save_diagnosis(incident.incident_id, diagnosis)
 
