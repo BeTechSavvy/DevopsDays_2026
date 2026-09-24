@@ -20,12 +20,15 @@ import argparse
 import time
 from datetime import timedelta
 
+import requests
+
 from anomaly_detector import AnomalyDetector
 from correlation_engine import CorrelationEngine
 from incident_store import IncidentStore
 from prometheus_source import PrometheusClient
 
 FEATURE_COLUMNS = ["cpu_percent", "memory_percent", "error_rate"]
+MIN_BASELINE_ROWS = 20
 
 
 def run_once(client, detector, engine, store, minutes_back, since=None):
@@ -69,12 +72,23 @@ def main():
 
     print(f"Fitting detector on the last {args.baseline_minutes} minutes as the 'normal' baseline...")
     baseline_df = client.get_metrics_dataframe(minutes_back=args.baseline_minutes)
-    if len(baseline_df) < 20:
+
+    missing = [c for c in FEATURE_COLUMNS if c not in baseline_df.columns]
+    if missing:
         print(
-            f"Only {len(baseline_df)} data points available -- that's thin for a baseline. "
-            "Let traffic build up longer, or hit /work a bunch of times first, e.g.:\n"
+            f"Baseline is missing {', '.join(missing)} -- Prometheus returned no data for "
+            "that query (see the WARNING above for the exact PromQL). Can't fit without "
+            f"all of {FEATURE_COLUMNS}."
+        )
+        raise SystemExit(1)
+
+    if len(baseline_df) < MIN_BASELINE_ROWS:
+        print(
+            f"Only {len(baseline_df)} data points available -- need at least {MIN_BASELINE_ROWS} "
+            "to fit a baseline. Let traffic build up longer, or hit /work a bunch of times first, e.g.:\n"
             "  for i in $(seq 1 100); do curl -s http://localhost:30001/work > /dev/null; sleep 1; done"
         )
+        raise SystemExit(1)
 
     detector = AnomalyDetector(contamination=0.05)
     detector.fit(baseline_df, feature_columns=FEATURE_COLUMNS)
@@ -90,7 +104,11 @@ def main():
         while True:
             time.sleep(args.interval)
             minutes_back = max(2, args.interval // 60 + 2)
-            last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back, since=last_seen)
+            try:
+                last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back, since=last_seen)
+            except (requests.RequestException, RuntimeError, KeyError) as e:
+                # last_seen is left unchanged, so the next poll re-covers this window
+                print(f"Poll failed ({type(e).__name__}: {e}). Retrying in {args.interval}s.")
     except KeyboardInterrupt:
         print("\nStopped.")
 

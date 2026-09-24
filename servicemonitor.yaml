@@ -13,7 +13,7 @@ kind: ServiceMonitor
 metadata:
   name: flask-service-monitor
   labels:
-    release: prometheus
+    release: monitoring
 spec:
   selector:
     matchLabels:

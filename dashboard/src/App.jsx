@@ -144,7 +144,7 @@ function App() {
       .then((data) => {
         setIncidents(data)
         setStatus('ok')
-        if (!selectedId && data.length > 0) setSelectedId(data[0].incident_id)
+        setSelectedId((prev) => (prev === null && data.length > 0 ? data[0].incident_id : prev))
       })
       .catch(() => setStatus('error'))
   }
