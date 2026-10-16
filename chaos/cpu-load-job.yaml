@@ -6,8 +6,9 @@
 # (~150 ms of SHA-256 hashing per request) with WORKERS back-to-back loops for DURATION
 # seconds. Going through the Service (not a port-forward) spreads requests
 # across BOTH flask pods, so both sit at their 250m CPU limit and
-# cpu_percent climbs to ~100%. It runs longer than the 2-minute rate()
-# window in prometheus_source.py so the spike isn't averaged away.
+# cpu_percent climbs to ~100%. It runs 4 minutes -- well past the 2-minute rate()
+# window in prometheus_source.py, so the spike isn't averaged away even if
+# the pod starts late (e.g. a slow image pull).
 #
 # Normally driven by chaos/cpu_exhaustion.py, which also cleans it up.
 # Manual use:
@@ -22,7 +23,7 @@ metadata:
     chaos: cpu-exhaustion
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: 300       # hard stop even if the script dies
+  activeDeadlineSeconds: 360       # hard stop even if the script dies
   ttlSecondsAfterFinished: 120     # auto-delete after finishing
   template:
     metadata:
@@ -38,7 +39,7 @@ spec:
         - name: TARGET
           value: "http://flask-service:5000/cpu-heavy"
         - name: DURATION
-          value: "180"
+          value: "240"
         - name: WORKERS
           value: "4"
         command: ["sh", "-c"]

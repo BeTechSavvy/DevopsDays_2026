@@ -3,8 +3,8 @@ chaos/cpu_exhaustion.py
 
 Scenario (a): CPU exhaustion.
 
-Starts chaos/cpu-load-job.yaml (in-cluster load on /spike-load across both
-flask pods for ~3 minutes), prints cpu_percent from Prometheus while it runs,
+Starts chaos/cpu-load-job.yaml (in-cluster load on /cpu-heavy across both
+flask pods for ~4 minutes), prints cpu_percent from Prometheus while it runs,
 then deletes the Job -- always, even on Ctrl+C or error. Recovery is automatic:
 once the load stops, CPU drops back to normal within ~2 minutes (the rate window).
 
@@ -12,32 +12,21 @@ Usage (from the repo root; Prometheus port-forward on 9090 for the live readout)
     python chaos/cpu_exhaustion.py
 """
 
-import subprocess
-import sys
 import time
 from pathlib import Path
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml-engine"))
+from common import hms, kubectl, log_injection, utc_now  # also puts ml-engine/ on sys.path
 from prometheus_source import CPU_QUERY, PROM_URL  # noqa: E402
 
+SCENARIO = "cpu_exhaustion"
+TARGET = "flask-deployment"  # the load lands on the flask pods, not the Job
+EXPECTED_KIND = "cpu_saturation"  # failure_kinds.CPU_SATURATION
 JOB = "chaos-cpu-load"
 MANIFEST = Path(__file__).with_name("cpu-load-job.yaml")
-TIMEOUT_SECONDS = 300  # matches activeDeadlineSeconds in the manifest
+TIMEOUT_SECONDS = 360  # matches activeDeadlineSeconds in the manifest
 POLL_SECONDS = 15
-
-
-def kubectl(*args, check=True) -> str:
-    result = subprocess.run(["kubectl", *args], text=True, capture_output=True)
-    if check and result.returncode != 0:
-        raise RuntimeError(f"kubectl {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def utc_now() -> str:
-    # incidents and the dashboard use UTC, so the script does too
-    return time.strftime("%H:%M:%S", time.gmtime())
 
 
 def cpu_percent() -> str:
@@ -57,7 +46,9 @@ def cleanup():
 
 def main():
     kubectl("delete", "job", JOB, "--ignore-not-found", "--wait=true", check=False)  # leftover from an old run
-    print(f"Starting CPU exhaustion at {utc_now()} UTC (cpu_percent now: {cpu_percent()})")
+    start = utc_now()
+    completed = False
+    print(f"Starting CPU exhaustion at {hms()} UTC (cpu_percent now: {cpu_percent()})")
     kubectl("apply", "-f", str(MANIFEST))
 
     try:
@@ -66,11 +57,12 @@ def main():
             time.sleep(POLL_SECONDS)
             status = kubectl("get", "job", JOB, "-o",
                              "jsonpath={.status.succeeded}/{.status.failed}", check=False)
-            print(f"  {utc_now()}  cpu_percent={cpu_percent()}")
+            print(f"  {hms()}  cpu_percent={cpu_percent()}")
             succeeded, _, failed = status.partition("/")
             if succeeded == "1":
                 print("Load finished.")
                 print(kubectl("logs", f"job/{JOB}", check=False))
+                completed = True
                 break
             if failed and failed != "0":
                 print("Load job failed:")
@@ -82,6 +74,7 @@ def main():
         print("\nInterrupted.")
     finally:
         cleanup()
+        log_injection(SCENARIO, start, utc_now(), TARGET, EXPECTED_KIND, completed)
 
 
 if __name__ == "__main__":

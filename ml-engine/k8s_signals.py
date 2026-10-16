@@ -46,6 +46,7 @@ MIN_UNAVAILABLE_SAMPLES = 3
 _POD_SELECTOR = f'namespace="{NAMESPACE}", pod=~"{K8S_POD_REGEX}"'
 
 RESTARTS_QUERY = f"kube_pod_container_status_restarts_total{{{_POD_SELECTOR}}}"
+CREATED_QUERY = f"kube_pod_created{{{_POD_SELECTOR}}}"  # value = pod creation time, unix seconds
 
 # last_terminated_reason is sticky -- it keeps reporting the reason of the
 # LAST termination forever (e.g. "Error" from a laptop reboot days ago). So
@@ -58,6 +59,16 @@ WAITING_REASON_QUERY = (
     f'reason=~"{"|".join(BAD_WAITING_REASONS)}"}} == 1'
 )
 
+# A container that is stopped RIGHT NOW because it crashed. Not sticky like
+# last_terminated_reason. Needed because a container that dies within
+# milliseconds spends most of its back-off in terminated/Error, and the
+# CrashLoopBackOff waiting state can fall between two 30s samples.
+CRASH_TERMINATED_REASONS = ["Error", "OOMKilled", "ContainerCannotRun", "StartError"]
+TERMINATED_NOW_QUERY = (
+    f"kube_pod_container_status_terminated_reason{{{_POD_SELECTOR}, "
+    f'reason=~"{"|".join(CRASH_TERMINATED_REASONS)}"}} == 1'
+)
+
 UNAVAILABLE_QUERY = (
     f'kube_deployment_status_replicas_unavailable{{namespace="{NAMESPACE}", '
     f'deployment=~"{K8S_DEPLOYMENT_REGEX}"}} > 0'
@@ -68,7 +79,7 @@ UNAVAILABLE_QUERY = (
 class K8sSignal:
     """One observation of something wrong in cluster state."""
     timestamp: pd.Timestamp
-    kind: str      # "restart" | "waiting" | "replicas_unavailable"
+    kind: str      # "restart" | "waiting" | "terminated" | "replicas_unavailable"
     target: str    # "pod/container" or "deployment"
     reason: str    # e.g. OOMKilled, Error, CrashLoopBackOff, ReplicasUnavailable
     value: float   # restarts added (restart), unavailable replicas, or 1 (waiting)
@@ -122,10 +133,24 @@ def fetch_k8s_signals(client, minutes_back: int, since=None, step: str = "30s") 
         for ts, _ in series["values"]:
             reasons.setdefault(key, []).append((_ts(ts), m.get("reason", "unknown")))
 
+    created = {  # pod -> creation time (unix seconds)
+        s["metric"].get("pod"): float(s["values"][-1][1])
+        for s in client.query_range(CREATED_QUERY, lookback_start, end, step=step) if s["values"]
+    }
+
     for series in client.query_range(RESTARTS_QUERY, lookback_start, end, step=step):
         m = series["metric"]
         key = (m.get("pod"), m.get("container"))
         values = series["values"]
+        # A pod CREATED inside the window whose restarts are already > 0 at its
+        # first sample crashed before kube-state-metrics first saw it -- there's
+        # no "before" sample to diff against, so count those restarts there.
+        first_t, first_v = _ts(values[0][0]), float(values[0][1])
+        if first_v > 0 and created.get(key[0], 0) >= lookback_start.timestamp():
+            signals.append(K8sSignal(
+                first_t, "restart", f"{key[0]}/{key[1]}",
+                _reason_at(reasons.get(key, []), first_t, step_td), first_v,
+            ))
         for (_, prev), (ts, cur) in zip(values, values[1:]):
             added = float(cur) - float(prev)
             if added > 0:
@@ -140,6 +165,13 @@ def fetch_k8s_signals(client, minutes_back: int, since=None, step: str = "30s") 
         for ts, _ in series["values"]:
             signals.append(K8sSignal(
                 _ts(ts), "waiting", f"{m.get('pod')}/{m.get('container')}", m.get("reason", "unknown"), 1,
+            ))
+
+    for series in client.query_range(TERMINATED_NOW_QUERY, start, end, step=step):
+        m = series["metric"]
+        for ts, _ in series["values"]:
+            signals.append(K8sSignal(
+                _ts(ts), "terminated", f"{m.get('pod')}/{m.get('container')}", m.get("reason", "unknown"), 1,
             ))
 
     # Look back far enough that a run already underway at the window start can still reach the minimum.
@@ -197,6 +229,8 @@ def describe_signal(summary: dict) -> str:
                 f"last terminated reason: {summary['reason']} {window}")
     if summary["kind"] == "waiting":
         return f"container {summary['target']} stuck waiting in {summary['reason']} {window}"
+    if summary["kind"] == "terminated":
+        return f"container {summary['target']} stopped after a crash (terminated: {summary['reason']}) {window}"
     return (f"deployment {summary['target']} had up to {int(summary['value'])} "
             f"unavailable replica(s) {window}")
 

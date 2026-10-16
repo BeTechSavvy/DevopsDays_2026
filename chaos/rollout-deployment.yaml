@@ -1,0 +1,50 @@
+# chaos/rollout-deployment.yaml
+#
+# Scenario (d): failed rollout.
+#
+# A copy of the flask app (same image, NOT behind flask-service -- its own
+# app label) that chaos/failed_rollout.py then "upgrades" to an image tag
+# that doesn't exist. The new pods can't pull it (ErrImagePull ->
+# ImagePullBackOff) while the old ones keep serving, exactly like a bad
+# release; the script then rolls back.
+#
+# imagePullPolicy is IfNotPresent (not Never like deployment.yaml) so a
+# missing tag is a real pull failure rather than ErrImageNeverPull.
+#
+# Normally driven by chaos/failed_rollout.py, which also cleans it up.
+# Manual use:
+#   kubectl apply -f chaos/rollout-deployment.yaml
+#   kubectl set image deployment/chaos-rollout app=flask-demo:does-not-exist
+#   kubectl rollout undo deployment/chaos-rollout
+#   kubectl delete deployment chaos-rollout
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-rollout
+  labels:
+    chaos: failed-rollout
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: chaos-rollout
+  template:
+    metadata:
+      labels:
+        app: chaos-rollout
+        chaos: failed-rollout
+    spec:
+      containers:
+      - name: app
+        image: flask-demo:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"

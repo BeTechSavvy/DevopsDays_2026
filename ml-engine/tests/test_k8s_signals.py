@@ -77,7 +77,36 @@ class FakeClient:
                 # run began before the 30-min window: 3 consecutive incl. lookback -> only the in-window sample kept
                 _series({"deployment": "chaos-early"}, [(t(30.5), 2), (t(30), 2), (t(29.5), 2)]),
             ]
+        if q == ks.CREATED_QUERY:
+            # both flask pods are old; the reboot pod's series starts mid-window (t(12)) with
+            # restarts=3, but it was created long before the window -> must not count
+            return [_series({"pod": "flask-deployment-7c9d8f6b5-aaaaa"}, [(t(12), t(90))]),
+                    _series({"pod": "flask-deployment-7c9d8f6b5-bbbbb"}, [(t(12), t(45))])]
+        if q == ks.TERMINATED_NOW_QUERY:
+            return []
         raise AssertionError(f"unexpected query: {q}")
+
+
+class NewCrashingPodClient(FakeClient):
+    """
+    Seen live: a crash-looping pod whose restart counter was already 1 at
+    kube-state-metrics' first sample and never moved in Prometheus after that,
+    while its container sat in terminated/Error rather than CrashLoopBackOff.
+    """
+
+    POD = "chaos-crashloop-fd995fbd-sjsrp"
+
+    def query_range(self, q, start, end, step="30s"):
+        t = self.t
+        if q == ks.RESTARTS_QUERY:
+            return [_series({"pod": self.POD, "container": "app"}, [(t(4), 1), (t(3.5), 1), (t(3), 1)])]
+        if q == ks.TERMINATED_REASON_QUERY:
+            return [_series({"pod": self.POD, "container": "app", "reason": "Error"}, [(t(4), 1), (t(3), 1)])]
+        if q == ks.CREATED_QUERY:
+            return [_series({"pod": self.POD}, [(t(4), t(4.3))])]
+        if q == ks.TERMINATED_NOW_QUERY:
+            return [_series({"pod": self.POD, "container": "app", "reason": "Error"}, [(t(3.5), 1)])]
+        return []
 
 
 def _fetch():
@@ -94,6 +123,15 @@ def test_restarts_use_reason_only_for_restarts_in_window():
     restarts = [s for s in signals if s.kind == "restart"]
     assert len(restarts) == 2 and all(s.reason == "OOMKilled" for s in restarts), restarts
     assert not any(s.target.startswith("flask-deployment-7c9d8f6b5-bbbbb") for s in signals), "sticky reboot Error leaked"
+
+
+def test_new_pod_already_restarted_and_terminated_now_count():
+    signals = ks.fetch_k8s_signals(NewCrashingPodClient(), minutes_back=30)
+    restarts = [s for s in signals if s.kind == "restart"]
+    assert len(restarts) == 1 and restarts[0].reason == "Error" and restarts[0].value == 1
+    assert [s.reason for s in signals if s.kind == "terminated"] == ["Error"]
+    incidents = ks.attach_k8s_signals([], signals, WINDOW)
+    assert len(incidents) == 1 and incidents[0].workload == "chaos-crashloop"
 
 
 def test_bad_waiting_reason_counts_immediately():

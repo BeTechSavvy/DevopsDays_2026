@@ -1,0 +1,60 @@
+# chaos/oom-deployment.yaml
+#
+# Scenario (b): OOMKilled.
+#
+# One pod that allocates memory steadily (0.5 MiB every second, and keeps it)
+# under a 128Mi limit, so the kernel OOM-kills it after ~4 minutes, like a
+# real slow memory leak. The leak is deliberately slow: Prometheus samples
+# every 15-30s, so a leak that fills the limit in seconds would give the
+# failure predictor (ml-engine/predictor.py) no chance to warn first.
+#
+# Uses the flask-demo image only because it already has Python and is
+# already on both nodes (imagePullPolicy: Never); none of the app runs.
+#
+# Normally driven by chaos/oom_killed.py, which also cleans it up.
+# Manual use:
+#   kubectl apply -f chaos/oom-deployment.yaml
+#   kubectl delete deployment chaos-oom
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-oom
+  labels:
+    chaos: oom-killed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-oom
+  template:
+    metadata:
+      labels:
+        app: chaos-oom
+        chaos: oom-killed
+    spec:
+      containers:
+      - name: leaker
+        image: flask-demo
+        imagePullPolicy: Never
+        env:
+        - name: MIB_PER_SECOND
+          value: "0.5"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, time
+          step = float(os.environ["MIB_PER_SECOND"])
+          held = []
+          while True:
+              # filled with 1s, not zeros: untouched zero pages wouldn't count against the limit
+              held.append(bytearray(b"\x01") * int(step * 1024 * 1024))
+              print(f"holding {len(held) * step:.1f} MiB", flush=True)
+              time.sleep(1)
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"

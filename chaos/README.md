@@ -34,8 +34,8 @@ appear, just without a diagnosis.
 
 | | |
 |---|---|
-| **Trigger** | `python chaos/cpu_exhaustion.py` (~4 min) |
-| **What it does** | Runs `chaos/cpu-load-job.yaml`: a small busybox Job inside the cluster that calls `flask-service:5000/cpu-heavy` (~150 ms of CPU-bound hashing per request) with 4 back-to-back workers for 180s. Going through the Service spreads load across **both** flask pods, so both sit at their 250m CPU limit. |
+| **Trigger** | `python chaos/cpu_exhaustion.py` (~5 min) |
+| **What it does** | Runs `chaos/cpu-load-job.yaml`: a small busybox Job inside the cluster that calls `flask-service:5000/cpu-heavy` (~150 ms of CPU-bound hashing per request) with 4 back-to-back workers for 240s. Going through the Service spreads load across **both** flask pods, so both sit at their 250m CPU limit. |
 | **Expected metrics** | `cpu_percent` climbs from ~1% to ~95% over ~2 minutes (the `rate[2m]` window), holds, then falls back. The script prints it every 15s. |
 | **Expected on the dashboard** | Within 1–2 pipeline polls: a new **HIGH** incident, detection badge **ML**, anomalies showing CPU rising to ~95% with memory and error rate normal. The diagnosis names CPU exhaustion / saturation of the flask pods. The incident grows while the spike lasts; Gemini re-diagnoses only when it doubles in size or gets more severe. |
 | **Recovery** | Automatic: the script deletes the Job when the load finishes (also on Ctrl+C), and CPU is back to normal ~2 minutes later. If the script was killed hard: `kubectl delete job chaos-cpu-load` (the Job also has a 5-minute hard deadline and auto-deletes 2 minutes after finishing). |
@@ -46,3 +46,37 @@ saturates a pod without any CPU-limit change.
 Earlier spikes peaked at ~11% because they were short (diluted by the 2-minute
 rate window), went through a port-forward that pins one pod (so at most 50% of
 the combined limit), and paused between requests.
+
+## (b) OOMKilled
+
+| | |
+|---|---|
+| **Trigger** | `python chaos/oom_killed.py` (~6 min) |
+| **What it does** | Runs `chaos/oom-deployment.yaml`: one pod (`chaos-oom`) that leaks 0.5 MiB/s under a 128Mi limit. The leak is slow on purpose, so the failure predictor can warn before the kill. |
+| **Expected** | Memory climbs steadily; a `predicted_exhaustion` warning (MEDIUM) about a minute or more before the first kill at ~4 min; then restarts with reason **OOMKilled** (and CrashLoopBackOff), a **HIGH** rule incident for workload `chaos-oom`. |
+| **Recovery** | The script deletes the Deployment. Manual: `kubectl delete deployment chaos-oom`. |
+
+## (c) CrashLoopBackOff
+
+| | |
+|---|---|
+| **Trigger** | `python chaos/crashloop.py` (~4 min) |
+| **What it does** | Runs `chaos/crashloop-deployment.yaml`: a container that prints a fatal config error and exits 1 on every start. |
+| **Expected** | Restarts (reason Error), waiting in **CrashLoopBackOff**, the Deployment unavailable: a **HIGH** rule incident for `chaos-crashloop`; the log evidence shows the FATAL line. |
+| **Recovery** | The script deletes the Deployment. Manual: `kubectl delete deployment chaos-crashloop`. |
+
+## (d) Failed rollout
+
+| | |
+|---|---|
+| **Trigger** | `python chaos/failed_rollout.py` (~6 min) |
+| **What it does** | Creates `chaos-rollout` (a copy of the flask app, not behind flask-service), waits until healthy, then sets its image to `flask-demo:v2-does-not-exist`. After 4 min (at least 3) it runs `kubectl rollout undo`. |
+| **Expected** | New pods in **ErrImagePull / ImagePullBackOff** while the old ones keep serving: a **HIGH** rule incident for `chaos-rollout`. |
+| **Recovery** | Rollback, then the script deletes the Deployment. Manual: `kubectl delete deployment chaos-rollout`. |
+
+## Running all of them (evaluation)
+
+`python chaos/run_all.py` runs every scenario in sequence, 3 rounds, with 6-minute
+cool-downs, with `pipeline.py --loop` running. Each script appends
+its ground truth (`scenario, start, end, target, expected_kind`) to
+`chaos/injections.jsonl`; then `python eval/evaluate.py` scores the run.
