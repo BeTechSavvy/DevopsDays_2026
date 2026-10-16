@@ -195,8 +195,10 @@ Full experiment (~3.8 h for 3 rounds of all 7), then the scores:
 
 ```powershell
 $start = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+powershell -File .\scripts\sample-pipeline.ps1   # optional, own terminal: pipeline CPU/memory -> results.md
 python chaos/run_all.py                    # --repeats 1 --gap 4 for a quick one
 python eval/rca_backfill.py --since $start # only if the pipeline ran with --no-rca
+                                           # add --priority-since <time> to diagnose later runs first
 python eval/evaluate.py --since $start     # -> eval/results.md, results.json, f1_by_scenario.png
 ```
 

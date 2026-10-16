@@ -15,6 +15,8 @@ chaos/injections.jsonl and the incidents stored in MongoDB, then reports
   - Gemini calls per incident (the incident's llm_calls counter)
   - pipeline cycle time with and without Gemini calls
     (ml-engine/logs/cycle_times.jsonl, written by pipeline.py)
+  - pipeline process CPU / memory (ml-engine/logs/pipeline_usage.csv,
+    written by scripts/sample-pipeline.ps1 while the experiment runs)
 
 Writes eval/results.md, eval/results.json and eval/f1_by_scenario.png.
 error_spike (traffic_generator.py) is reported as a separate validation row,
@@ -44,11 +46,41 @@ from matching import GRACE, Injection, match_all, score, ts  # noqa: E402
 
 INJECTIONS = ROOT / "chaos" / "injections.jsonl"
 CYCLE_LOG = ROOT / "ml-engine" / "logs" / "cycle_times.jsonl"
+USAGE_CSV = ROOT / "ml-engine" / "logs" / "pipeline_usage.csv"
 LABELS = EVAL_DIR / "rca_labels.csv"
 RESULTS_MD = EVAL_DIR / "results.md"
 RESULTS_JSON = EVAL_DIR / "results.json"
 F1_PNG = EVAL_DIR / "f1_by_scenario.png"
 SEPARATE = ("error_spike",)
+
+# The defect found during the 2026-10-16 evaluation run and its fix (see
+# write_markdown): injections that started after the fixed pipeline was
+# running get their own table. Override with --fixed-since / --fixed-commit.
+FIX_SINCE = "2026-10-16T10:52:26Z"
+FIX_COMMIT = "ab5773b"
+DEFECT_NOTE = [
+    "## Defect found during evaluation", "",
+    "**What happened.** After a pipeline restart at 09:01:41 UTC, steady low/medium noise on "
+    "flask-deployment (its error rate normally swings 7–13% and its memory drifts up slowly) kept one "
+    "incident, `d4ac9d90`, open from 09:01:41 until the fix at ~10:52 — 100+ minutes and 230+ anomalies. "
+    "Every new flask anomaly merged into it, and because it was always open it blocked every baseline "
+    "refit, so the stale baseline kept producing the noise that kept it open.", "",
+    "**Runs affected** (all on the code before the fix):", "",
+    "- cpu_exhaustion round 2 (09:54): its CPU spike merged into `d4ac9d90`, which the matcher had "
+    "already used for an earlier injection, so it scores as a **false negative**.",
+    "- error_spike round 1 (09:46): matched to `d4ac9d90`, which started 44 minutes before the injection, "
+    "so its MTTD is **negative** and meaningless.",
+    "- db_failure round 2 (10:47): the same mechanism on demo-db-app — a noise incident (`46d6ede0`) open "
+    "since 10:32 absorbed the injection. It was still detected with the right kind (db_connection), but its "
+    "MTTD is negative.",
+    "- error_spike round 2 (10:59) started after the fix and is not affected.", "",
+    "**Fix** (commit `{commit}`): an incident is closed after 10 minutes without a medium/high anomaly "
+    "or Kubernetes signal, or at 30 minutes; a stale low/medium incident no longer blocks a refit, and its "
+    "rows are used for the baseline (drift). The pipeline was restarted with the fix at {since} UTC "
+    "(in a cool-down), and two extra cpu_exhaustion rounds and one extra error_spike round were run so each "
+    "has 3 runs on the fixed code (table above). Results were **not** re-scored and no incident was split "
+    "after the fact: the tables above count the affected runs as they happened.",
+]
 SCENARIO_ORDER = ["cpu_exhaustion", "oom_killed", "crashloop", "failed_rollout",
                   "node_pressure", "db_failure", "error_spike"]
 
@@ -135,6 +167,18 @@ def cycle_times(since) -> dict:
             "with_llm_minus_llm_time": _stats(excluding_llm)}
 
 
+def pipeline_usage(start, end, path=USAGE_CSV) -> dict:
+    """The pipeline process's CPU % (of one core) and working-set MB, sampled within [start, end]."""
+    cpu, mem = [], []
+    if path.exists():
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if start <= ts(row["time"]) <= end:
+                    cpu.append(float(row["cpu_percent"]))
+                    mem.append(float(row["working_set_mb"]))
+    return {"cpu_percent": _stats(cpu), "working_set_mb": _stats(mem)}
+
+
 def prediction_lead_time(match) -> float | None:
     """
     Seconds from the first predicted_exhaustion warning to the first OOMKilled
@@ -152,6 +196,27 @@ def prediction_lead_time(match) -> float | None:
     if not warned or not killed or min(warned) >= min(killed):
         return None
     return (min(killed) - min(warned)).total_seconds()
+
+
+def fixed_code_flask(matches, false_positives, fixed_since) -> dict:
+    """
+    The flask-deployment scenarios, restricted to injections that started
+    after the fix -- same matching as the main table, just a subset of it.
+    """
+    from failure_kinds import incident_kinds
+
+    rows = []
+    for m in matches:
+        inj = m.injection
+        if inj.target != "flask-deployment" or inj.start < fixed_since:
+            continue
+        rows.append({"scenario": inj.scenario, "start": str(inj.start), "detected": m.detected,
+                     "incident_id": m.first["incident_id"] if m.detected else None,
+                     "kind_correct": (inj.expected_kind in incident_kinds(m.first)) if m.detected else None,
+                     "mttd_seconds": m.mttd_seconds()})
+    fps = [d["incident_id"] for d in false_positives
+           if (d.get("workload") or "flask-deployment") == "flask-deployment" and ts(d["start_time"]) >= fixed_since]
+    return {"since": str(fixed_since), "injections": rows, "flask_false_positives": fps}
 
 
 def per_scenario_extras(matches, grades) -> dict:
@@ -233,6 +298,14 @@ def write_markdown(result: dict) -> None:
     rca = result["rca_overall"]
     lines += ["", f"RCA accuracy overall: {_fmt(rca['accuracy'], pct=True)} of {rca['graded']} graded "
                   f"({rca['ungraded']} still ungraded in `eval/rca_labels.csv`)."]
+    if "diagnosed" in rca:
+        skipped = rca["detected"] - rca["diagnosed"]
+        models = ", ".join(f"`{m}`" for m in rca["models"]) or "–"
+        lines += ["", f"RCA diagnoses: {rca['diagnosed']} of {rca['detected']} detections diagnosed, "
+                      f"{skipped} skipped{' (Gemini free-tier daily quota)' if skipped else ''}; model: {models}. "
+                      "The pipeline ran with `--no-rca`; diagnoses were made afterwards by "
+                      "`eval/rca_backfill.py --priority-since` (fixed-code runs first, then the latest rounds), "
+                      "one call per detection."]
     if rca.get("backfilled"):
         lines += ["", f"{rca['backfilled']} of the diagnoses were made after the run by `eval/rca_backfill.py` "
                       "(live RCA was off: Gemini free-tier quota), one call per detected injection — so for "
@@ -260,6 +333,54 @@ def write_markdown(result: dict) -> None:
                        ("with Gemini calls, minus Gemini time", "with_llm_minus_llm_time")):
         c = ct[key]
         lines.append(f"| {label} | {c['n']} | {_fmt(c['mean'])} | {_fmt(c['median'])} | {_fmt(c['p95'])} | {_fmt(c['max'])} |")
+    usage = result.get("pipeline_usage")
+    if usage and usage["cpu_percent"]["n"]:
+        cpu, mem = usage["cpu_percent"], usage["working_set_mb"]
+        lines += ["", "## Pipeline resource usage", "",
+                  f"pipeline.py sampled every 60 s during the experiment ({cpu['n']} samples, "
+                  "`ml-engine/logs/pipeline_usage.csv`). CPU is % of one core.", "",
+                  "| Metric | mean | max |", "|---|---:|---:|",
+                  f"| CPU % | {_fmt(cpu['mean'], digits=1)} | {_fmt(cpu['max'], digits=1)} |",
+                  f"| Memory (working set, MB) | {_fmt(mem['mean'], digits=0)} | {_fmt(mem['max'], digits=0)} |"]
+    fixed = result.get("fixed_code")
+    if fixed and fixed["injections"]:
+        lines += ["", f"## Flask scenarios on the fixed code only (injections after {fixed['since']} UTC, "
+                      f"commit `{result['fix_commit']}`)", "",
+                  "A subset of the main table, same matching rules; see *Defect found during evaluation* below.",
+                  "", "| Scenario | Injections | Detected | Recall | Kind correct | MTTD mean (s) | MTTD max (s) |",
+                  "|---|---:|---:|---:|---:|---:|---:|"]
+        for s in _order({r["scenario"] for r in fixed["injections"]}):
+            rs = [r for r in fixed["injections"] if r["scenario"] == s]
+            det = [r for r in rs if r["detected"]]
+            mttd = _stats([r["mttd_seconds"] for r in det if r["mttd_seconds"] is not None])
+            kind = [r["kind_correct"] for r in det]
+            lines.append(f"| {s} | {len(rs)} | {len(det)} | {_fmt(len(det) / len(rs))} | "
+                         f"{_fmt(sum(kind) / len(kind) if kind else None, pct=True)} | "
+                         f"{_fmt(mttd['mean'], digits=0)} | {_fmt(mttd['max'], digits=0)} |")
+        lines += ["", f"flask-deployment false positives after the fix: {len(fixed['flask_false_positives'])}"
+                      + (f" ({', '.join(fixed['flask_false_positives'])})." if fixed["flask_false_positives"] else ".")]
+        lines += [""] + [line.format(commit=result["fix_commit"], since=fixed["since"]) for line in DEFECT_NOTE]
+
+    lines += ["", "## Per injection", "",
+              "| # | Scenario | Start → end (UTC) | Detected by | MTTD (s) |", "|---:|---|---|---|---:|"]
+    for n, m in enumerate(result["matches"], 1):
+        ids = ", ".join(f"`{i}`" for i in m["incident_ids"]) or "**not detected**"
+        lines.append(f"| {n} | {m['scenario']} | {m['start'][11:19]} → {m['end'][11:19]} | {ids} | "
+                     f"{_fmt(m['mttd_seconds'], digits=0)} |")
+
+    lines += ["", "## Known limitation: demo-db-app baseline noise", "",
+              "demo-db-app's metrics are almost flat (CPU ~2%, memory ~11.5%, no errors), so its Isolation "
+              "Forest baseline is very tight and small wobbles become low/medium ML-only incidents with no "
+              "Kubernetes signals. They overlap no injection, so they count as false positives, attributed "
+              "to db_failure (the scenario that targets demo-db-app). Not fixed during the evaluation.",
+              "", "## Other notes", "",
+              "- **MTTD** is the incident's `stored_at` minus the injection start. When an injection merges into "
+              "an incident that noise had already opened, the detection is real but MTTD is negative and says "
+              "nothing about detection speed (error_spike round 3 on the fixed code: an incident opened by noise "
+              "97 s earlier absorbed it).",
+              "- **cpu_exhaustion kind**: the load job drives CPU to 75–85% of the pods' limit, just under the "
+              "85% `cpu_saturation` threshold, so the CPU incidents are detected but without that kind. The "
+              "threshold was not changed during the evaluation."]
     lines += ["", "![F1 by scenario](f1_by_scenario.png)", ""]
     RESULTS_MD.write_text("\n".join(lines), encoding="utf-8")
 
@@ -297,7 +418,12 @@ def main():
     parser.add_argument("--margin", type=float, default=6,
                         help="Minutes around the injections that count as the evaluation period (default 6)")
     parser.add_argument("--include-incomplete", action="store_true", help="Also score interrupted injections")
+    parser.add_argument("--fixed-since", default=FIX_SINCE,
+                        help=f"Flask injections from this UTC time get a fixed-code table (default {FIX_SINCE})")
+    parser.add_argument("--fixed-commit", default=FIX_COMMIT, help="The fix's commit, for the report")
     args = parser.parse_args()
+    # results.md has arrows and dashes; a redirected Windows console defaults to cp1252
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     from incident_store import IncidentStore
 
@@ -329,10 +455,17 @@ def main():
         "rca_overall": {"graded": len(graded), "ungraded": len(detected_ids) - len(graded),
                         "accuracy": sum(graded) / len(graded) if graded else None,
                         "backfilled": sum(bool(m.first["diagnosis"].get("backfilled"))
-                                          for m in matches if m.detected and m.first.get("diagnosis"))},
+                                          for m in matches if m.detected and m.first.get("diagnosis")),
+                        "detected": sum(m.detected for m in matches),
+                        "diagnosed": len(detected_ids),
+                        "models": sorted({m.first["diagnosis"].get("model") or "unrecorded"
+                                          for m in matches if m.detected and m.first.get("diagnosis")})},
         # every logged cycle, not just this period: a --no-rca run has no Gemini cycles of its own
         "cycle_times": cycle_times(None),
-        "matches": [{"scenario": m.injection.scenario, "start": str(m.injection.start),
+        "pipeline_usage": pipeline_usage(period_start, period_end),
+        "fix_commit": args.fixed_commit,
+        "fixed_code": fixed_code_flask(matches, false_positives, ts(args.fixed_since)),
+        "matches": [{"scenario": m.injection.scenario, "start": str(m.injection.start), "end": str(m.injection.end),
                      "incident_ids": [d["incident_id"] for d in m.incidents],
                      "mttd_seconds": m.mttd_seconds()} for m in matches],
         "false_positives": [{"incident_id": d["incident_id"], "workload": d.get("workload"),

@@ -259,6 +259,17 @@ class IncidentStore:
         cursor = self.collection.find({"max_severity": severity}, {"start_dt": 0, "end_dt": 0})
         return list(cursor)
 
+    def get_by_id(self, incident_id: str) -> dict | None:
+        """One incident with everything stored on it, or None."""
+        return self.collection.find_one({"incident_id": incident_id}, {"start_dt": 0, "end_dt": 0})
+
+    def severity_counts(self) -> dict:
+        """{"high": n, "medium": n, "low": n} over all stored incidents (0 when there are none)."""
+        counts = {"high": 0, "medium": 0, "low": 0}
+        for row in self.collection.aggregate([{"$group": {"_id": "$max_severity", "n": {"$sum": 1}}}]):
+            counts[row["_id"]] = row["n"]
+        return counts
+
 
 def _merge_incident_docs(old: dict, new: dict) -> dict:
     """Combines two incident documents describing the same event. Keeps old's id."""

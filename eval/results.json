@@ -1,0 +1,697 @@
+{
+  "generated": "2026-10-16 12:50:27",
+  "period": {
+    "start": "2026-10-16 08:35:33",
+    "end": "2026-10-16 12:51:28"
+  },
+  "n_injections": 24,
+  "n_incidents": 36,
+  "scores": {
+    "scenarios": {
+      "cpu_exhaustion": {
+        "tp": 4,
+        "fp": 1,
+        "fn": 1,
+        "precision": 0.8,
+        "recall": 0.8,
+        "f1": 0.8000000000000002,
+        "injections": 5,
+        "duplicates": 0
+      },
+      "crashloop": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "injections": 3,
+        "duplicates": 0
+      },
+      "db_failure": {
+        "tp": 3,
+        "fp": 9,
+        "fn": 0,
+        "precision": 0.25,
+        "recall": 1.0,
+        "f1": 0.4,
+        "injections": 3,
+        "duplicates": 0
+      },
+      "error_spike": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "injections": 4,
+        "duplicates": 0
+      },
+      "failed_rollout": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "injections": 3,
+        "duplicates": 0
+      },
+      "node_pressure": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "injections": 3,
+        "duplicates": 3
+      },
+      "oom_killed": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "injections": 3,
+        "duplicates": 0
+      }
+    },
+    "overall": {
+      "tp": 19,
+      "fp": 10,
+      "fn": 1,
+      "precision": 0.6551724137931034,
+      "recall": 0.95,
+      "f1": 0.7755102040816326,
+      "injections": 20,
+      "duplicates": 3
+    },
+    "fp_other": 0
+  },
+  "extras": {
+    "oom_killed": {
+      "prediction_lead_seconds": {
+        "n": 3,
+        "mean": 88.93199966666667,
+        "median": 91.223,
+        "p95": 100.178999,
+        "min": 75.394,
+        "max": 100.178999
+      },
+      "kind_accuracy": 1.0,
+      "diagnosed": 3,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": 171.03143033333333,
+        "median": 164.316061,
+        "p95": 187.671775,
+        "min": 161.106455,
+        "max": 187.671775
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.0,
+        "median": 1,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "db_failure": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 0.6666666666666666,
+      "diagnosed": 3,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": -273.40224366666666,
+        "median": 20.73079,
+        "p95": 83.600592,
+        "min": -924.538113,
+        "max": 83.600592
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.0,
+        "median": 1,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "error_spike": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 0.75,
+      "diagnosed": 4,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 4,
+        "mean": -665.549049,
+        "median": -28.145438000000002,
+        "p95": 43.204945,
+        "min": -2649.110265,
+        "max": 43.204945
+      },
+      "llm_calls_per_incident": {
+        "n": 4,
+        "mean": 1.0,
+        "median": 1.0,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "cpu_exhaustion": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 0.0,
+      "diagnosed": 4,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 4,
+        "mean": 42.27820775,
+        "median": 43.924542,
+        "p95": 58.621581,
+        "min": 22.642166,
+        "max": 58.621581
+      },
+      "llm_calls_per_incident": {
+        "n": 4,
+        "mean": 1.0,
+        "median": 1.0,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "crashloop": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 1.0,
+      "diagnosed": 3,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": 54.30262533333334,
+        "median": 54.927033,
+        "p95": 76.733889,
+        "min": 31.246954,
+        "max": 76.733889
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.0,
+        "median": 1,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "node_pressure": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 1.0,
+      "diagnosed": 3,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": 103.29581333333333,
+        "median": 106.332154,
+        "p95": 120.987459,
+        "min": 82.567827,
+        "max": 120.987459
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.0,
+        "median": 1,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "failed_rollout": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 1.0,
+      "diagnosed": 3,
+      "rca_graded": 0,
+      "rca_accuracy": null,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": 62.86708066666667,
+        "median": 65.902372,
+        "p95": 75.777351,
+        "min": 46.921519,
+        "max": 75.777351
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.3333333333333333,
+        "median": 1,
+        "p95": 2,
+        "min": 1,
+        "max": 2
+      }
+    }
+  },
+  "rca_overall": {
+    "graded": 0,
+    "ungraded": 23,
+    "accuracy": null,
+    "backfilled": 23,
+    "detected": 23,
+    "diagnosed": 23,
+    "models": [
+      "gemini-flash-lite-latest"
+    ]
+  },
+  "cycle_times": {
+    "without_llm": {
+      "n": 302,
+      "mean": 1.2014370860927153,
+      "median": 0.702,
+      "p95": 5.074,
+      "min": 0.145,
+      "max": 9.354
+    },
+    "with_llm": {
+      "n": 12,
+      "mean": 21.34691666666667,
+      "median": 9.596499999999999,
+      "p95": 54.012,
+      "min": 5.637,
+      "max": 73.601
+    },
+    "with_llm_minus_llm_time": {
+      "n": 12,
+      "mean": 0.6470000000000001,
+      "median": 0.2400000000000002,
+      "p95": 1.0210000000000008,
+      "min": 0.14700000000000024,
+      "max": 3.8800000000000026
+    }
+  },
+  "pipeline_usage": {
+    "cpu_percent": {
+      "n": 192,
+      "mean": 0.7224479166666667,
+      "median": 0.63,
+      "p95": 1.31,
+      "min": 0.13,
+      "max": 13.9
+    },
+    "working_set_mb": {
+      "n": 192,
+      "mean": 109.1328125,
+      "median": 105.4,
+      "p95": 221.9,
+      "min": 50.8,
+      "max": 224.3
+    }
+  },
+  "fix_commit": "ab5773b",
+  "fixed_code": {
+    "since": "2026-10-16 10:52:26",
+    "injections": [
+      {
+        "scenario": "error_spike",
+        "start": "2026-10-16 10:59:01",
+        "detected": true,
+        "incident_id": "a2f465fa",
+        "kind_correct": true,
+        "mttd_seconds": 41.1179
+      },
+      {
+        "scenario": "cpu_exhaustion",
+        "start": "2026-10-16 11:07:04",
+        "detected": true,
+        "incident_id": "b531c60e",
+        "kind_correct": false,
+        "mttd_seconds": 44.825437
+      },
+      {
+        "scenario": "error_spike",
+        "start": "2026-10-16 12:12:00",
+        "detected": true,
+        "incident_id": "6422609a",
+        "kind_correct": false,
+        "mttd_seconds": -97.408776
+      },
+      {
+        "scenario": "cpu_exhaustion",
+        "start": "2026-10-16 12:20:23",
+        "detected": true,
+        "incident_id": "560b207b",
+        "kind_correct": false,
+        "mttd_seconds": 22.642166
+      },
+      {
+        "scenario": "cpu_exhaustion",
+        "start": "2026-10-16 12:30:37",
+        "detected": true,
+        "incident_id": "09298360",
+        "kind_correct": false,
+        "mttd_seconds": 43.023647
+      },
+      {
+        "scenario": "error_spike",
+        "start": "2026-10-16 12:41:58",
+        "detected": true,
+        "incident_id": "ffdf37f7",
+        "kind_correct": true,
+        "mttd_seconds": 43.204945
+      }
+    ],
+    "flask_false_positives": []
+  },
+  "matches": [
+    {
+      "scenario": "cpu_exhaustion",
+      "start": "2026-10-16 08:41:33",
+      "end": "2026-10-16 08:45:45",
+      "incident_ids": [
+        "c0b88cbb"
+      ],
+      "mttd_seconds": 58.621581
+    },
+    {
+      "scenario": "oom_killed",
+      "start": "2026-10-16 08:51:46",
+      "end": "2026-10-16 08:58:18",
+      "incident_ids": [
+        "0b0b98c0"
+      ],
+      "mttd_seconds": 187.671775
+    },
+    {
+      "scenario": "crashloop",
+      "start": "2026-10-16 09:04:19",
+      "end": "2026-10-16 09:08:31",
+      "incident_ids": [
+        "660ee265"
+      ],
+      "mttd_seconds": 54.927033
+    },
+    {
+      "scenario": "failed_rollout",
+      "start": "2026-10-16 09:14:35",
+      "end": "2026-10-16 09:18:36",
+      "incident_ids": [
+        "323f0642"
+      ],
+      "mttd_seconds": 46.921519
+    },
+    {
+      "scenario": "node_pressure",
+      "start": "2026-10-16 09:25:08",
+      "end": "2026-10-16 09:29:16",
+      "incident_ids": [
+        "f4ca133c",
+        "b4706570"
+      ],
+      "mttd_seconds": 82.567827
+    },
+    {
+      "scenario": "db_failure",
+      "start": "2026-10-16 09:35:17",
+      "end": "2026-10-16 09:39:20",
+      "incident_ids": [
+        "fd70123a"
+      ],
+      "mttd_seconds": 20.73079
+    },
+    {
+      "scenario": "error_spike",
+      "start": "2026-10-16 09:46:21",
+      "end": "2026-10-16 09:46:51",
+      "incident_ids": [
+        "d4ac9d90"
+      ],
+      "mttd_seconds": -2649.110265
+    },
+    {
+      "scenario": "cpu_exhaustion",
+      "start": "2026-10-16 09:54:23",
+      "end": "2026-10-16 09:58:31",
+      "incident_ids": [],
+      "mttd_seconds": null
+    },
+    {
+      "scenario": "oom_killed",
+      "start": "2026-10-16 10:04:32",
+      "end": "2026-10-16 10:11:04",
+      "incident_ids": [
+        "62d94f2d"
+      ],
+      "mttd_seconds": 161.106455
+    },
+    {
+      "scenario": "crashloop",
+      "start": "2026-10-16 10:17:06",
+      "end": "2026-10-16 10:21:08",
+      "incident_ids": [
+        "d6d49e74"
+      ],
+      "mttd_seconds": 31.246954
+    },
+    {
+      "scenario": "failed_rollout",
+      "start": "2026-10-16 10:27:12",
+      "end": "2026-10-16 10:31:14",
+      "incident_ids": [
+        "12510c90"
+      ],
+      "mttd_seconds": 65.902372
+    },
+    {
+      "scenario": "node_pressure",
+      "start": "2026-10-16 10:37:46",
+      "end": "2026-10-16 10:41:55",
+      "incident_ids": [
+        "a5050b2b",
+        "38674331"
+      ],
+      "mttd_seconds": 120.987459
+    },
+    {
+      "scenario": "db_failure",
+      "start": "2026-10-16 10:47:55",
+      "end": "2026-10-16 10:52:00",
+      "incident_ids": [
+        "46d6ede0"
+      ],
+      "mttd_seconds": -924.538113
+    },
+    {
+      "scenario": "error_spike",
+      "start": "2026-10-16 10:59:01",
+      "end": "2026-10-16 10:59:31",
+      "incident_ids": [
+        "a2f465fa"
+      ],
+      "mttd_seconds": 41.1179
+    },
+    {
+      "scenario": "cpu_exhaustion",
+      "start": "2026-10-16 11:07:04",
+      "end": "2026-10-16 11:11:11",
+      "incident_ids": [
+        "b531c60e"
+      ],
+      "mttd_seconds": 44.825437
+    },
+    {
+      "scenario": "oom_killed",
+      "start": "2026-10-16 11:17:12",
+      "end": "2026-10-16 11:23:44",
+      "incident_ids": [
+        "8ec83d9a"
+      ],
+      "mttd_seconds": 164.316061
+    },
+    {
+      "scenario": "crashloop",
+      "start": "2026-10-16 11:29:45",
+      "end": "2026-10-16 11:33:48",
+      "incident_ids": [
+        "e2ea9488"
+      ],
+      "mttd_seconds": 76.733889
+    },
+    {
+      "scenario": "failed_rollout",
+      "start": "2026-10-16 11:39:51",
+      "end": "2026-10-16 11:43:53",
+      "incident_ids": [
+        "18c65622"
+      ],
+      "mttd_seconds": 75.777351
+    },
+    {
+      "scenario": "node_pressure",
+      "start": "2026-10-16 11:50:26",
+      "end": "2026-10-16 11:54:54",
+      "incident_ids": [
+        "3ff65cc0",
+        "24a92540"
+      ],
+      "mttd_seconds": 106.332154
+    },
+    {
+      "scenario": "db_failure",
+      "start": "2026-10-16 12:00:55",
+      "end": "2026-10-16 12:04:59",
+      "incident_ids": [
+        "157c3a6b"
+      ],
+      "mttd_seconds": 83.600592
+    },
+    {
+      "scenario": "error_spike",
+      "start": "2026-10-16 12:12:00",
+      "end": "2026-10-16 12:12:30",
+      "incident_ids": [
+        "6422609a"
+      ],
+      "mttd_seconds": -97.408776
+    },
+    {
+      "scenario": "cpu_exhaustion",
+      "start": "2026-10-16 12:20:23",
+      "end": "2026-10-16 12:24:31",
+      "incident_ids": [
+        "560b207b"
+      ],
+      "mttd_seconds": 22.642166
+    },
+    {
+      "scenario": "cpu_exhaustion",
+      "start": "2026-10-16 12:30:37",
+      "end": "2026-10-16 12:34:56",
+      "incident_ids": [
+        "09298360"
+      ],
+      "mttd_seconds": 43.023647
+    },
+    {
+      "scenario": "error_spike",
+      "start": "2026-10-16 12:41:58",
+      "end": "2026-10-16 12:42:28",
+      "incident_ids": [
+        "ffdf37f7"
+      ],
+      "mttd_seconds": 43.204945
+    }
+  ],
+  "false_positives": [
+    {
+      "incident_id": "d8c9fd97",
+      "workload": "flask-deployment",
+      "start_time": "2026-10-16 08:35:39.398000002",
+      "max_severity": "low"
+    },
+    {
+      "incident_id": "25ee598d",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 08:49:38.891000032",
+      "max_severity": "low"
+    },
+    {
+      "incident_id": "36b6c50d",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 09:02:42.206000090",
+      "max_severity": "medium"
+    },
+    {
+      "incident_id": "5e182b00",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 09:24:28.799999952",
+      "max_severity": "medium"
+    },
+    {
+      "incident_id": "b8fe0e63",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 10:23:33.798000097",
+      "max_severity": "medium"
+    },
+    {
+      "incident_id": "d078ad19",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 11:01:44.928999901",
+      "max_severity": "medium"
+    },
+    {
+      "incident_id": "8625685a",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 11:19:55.930000067",
+      "max_severity": "medium"
+    },
+    {
+      "incident_id": "3da33680",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 11:52:43.844000101",
+      "max_severity": "low"
+    },
+    {
+      "incident_id": "e03585d5",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 12:26:34.188999891",
+      "max_severity": "low"
+    },
+    {
+      "incident_id": "4eb70a22",
+      "workload": "demo-db-app",
+      "start_time": "2026-10-16 12:31:51.671999931",
+      "max_severity": "low"
+    }
+  ]
+}
