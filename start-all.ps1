@@ -145,15 +145,17 @@ foreach ($name in $tabs.Keys) {
 
 # --- launch --------------------------------------------------------------
 Step "Launching tabs"
+# Full path: Windows Terminal can fail to resolve a bare "powershell" (error 0x80070002)
+$powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 if (Get-Command wt.exe -ErrorAction SilentlyContinue) {
     $parts = foreach ($name in $files.Keys) {
-        "new-tab --title $name --suppressApplicationTitle powershell -NoExit -ExecutionPolicy Bypass -File `"$($files[$name])`""
+        "new-tab --title $name --suppressApplicationTitle `"$powershell`" -NoExit -ExecutionPolicy Bypass -File `"$($files[$name])`""
     }
     Start-Process wt.exe -ArgumentList ("-w new " + ($parts -join " ; "))
     Write-Host "Windows Terminal: tabs $($files.Keys -join ', ')."
 } else {
     foreach ($name in $files.Keys) {
-        Start-Process powershell -WindowStyle Minimized -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$($files[$name])`""
+        Start-Process $powershell -WindowStyle Minimized -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$($files[$name])`""
     }
     Write-Host "wt.exe not found: started $($files.Count) minimized PowerShell windows instead."
 }
