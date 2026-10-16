@@ -1,0 +1,50 @@
+# chaos/crashloop-deployment.yaml
+#
+# Scenario (c): CrashLoopBackOff.
+#
+# A container that fails its start-up (prints a fatal config error and
+# exits 1) every time it starts. Kubernetes keeps restarting it with a
+# growing back-off -> CrashLoopBackOff, and the Deployment never becomes
+# available.
+#
+# Normally driven by chaos/crashloop.py, which also cleans it up.
+# Manual use:
+#   kubectl apply -f chaos/crashloop-deployment.yaml
+#   kubectl delete deployment chaos-crashloop
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-crashloop
+  labels:
+    chaos: crashloop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-crashloop
+  template:
+    metadata:
+      labels:
+        app: chaos-crashloop
+        chaos: crashloop
+    spec:
+      containers:
+      - name: app
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "starting payment-worker v2.3.1"
+          sleep 3   # "loading config": a crash after a moment, like a real start-up failure
+          echo "ERROR: required environment variable DATABASE_URL is not set" >&2
+          echo "FATAL: configuration invalid, exiting" >&2
+          exit 1
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

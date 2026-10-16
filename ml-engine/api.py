@@ -8,11 +8,12 @@ them as JSON.
 
 Run this alongside your detection pipeline:
     python api.py
-It starts on http://localhost:5050
+It starts on http://localhost:5050 (API_PORT in ml-engine/.env to change it)
 """
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from config import API_PORT
 from incident_store import IncidentStore
 
 app = Flask(__name__)
@@ -51,4 +52,4 @@ def get_incidents_by_severity(severity):
 if __name__ == "__main__":
     if not store.is_connected():
         print("Warning: MongoDB not reachable. The dashboard will show no data.")
-    app.run(port=5050, debug=True)
+    app.run(port=API_PORT, debug=True)

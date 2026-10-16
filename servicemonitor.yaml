@@ -4,10 +4,10 @@
 #
 # By default the chart's Prometheus CR only picks up ServiceMonitors that
 # carry the label `release: <helm release name>`. The README installs with
-# `helm install prometheus prometheus-community/kube-prometheus-stack`, so
-# the release name is "prometheus" -- hence the label below. If your release
-# name differs, change it to match, or this ServiceMonitor will be silently
-# ignored.
+# `helm install monitoring prometheus-community/kube-prometheus-stack`, so
+# the release name is "monitoring" -- hence the label below (check with
+# `helm list -A`). If your release name differs, change it to match, or this
+# ServiceMonitor will be silently ignored.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

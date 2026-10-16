@@ -15,12 +15,16 @@ to build the error_rate signal.
 error signal for the anomaly detector to find, instead of an
 always-green counter that never gives Isolation Forest anything to
 flag as abnormal.
+
+/cpu-heavy is bounded CPU-bound work (~150 ms per request), what the
+CPU-exhaustion chaos job (chaos/cpu-load-job.yaml) hammers.
 """
 
+import hashlib
 import random
 import time
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from prometheus_flask_exporter import PrometheusMetrics
 
 app = Flask(__name__)
@@ -54,6 +58,27 @@ def spike_load():
     while time.time() < end:
         x += 1
     return jsonify({"status": "load generated", "iterations": x})
+
+
+CPU_HEAVY_DEFAULT_MS = 150
+CPU_HEAVY_MAX_MS = 200
+
+
+@app.route("/cpu-heavy")
+def cpu_heavy():
+    """
+    Real CPU-bound work (repeated SHA-256) for ~150 ms per request -- the
+    target of the CPU-exhaustion chaos job. Bounded: ?ms= is clamped to
+    10-200 ms, so no single request can pin a worker for long.
+    """
+    budget_ms = min(max(request.args.get("ms", CPU_HEAVY_DEFAULT_MS, type=int), 10), CPU_HEAVY_MAX_MS)
+    end = time.perf_counter() + budget_ms / 1000
+    digest, rounds = b"chaos", 0
+    while time.perf_counter() < end:
+        for _ in range(1000):
+            digest = hashlib.sha256(digest).digest()
+        rounds += 1000
+    return jsonify({"status": "ok", "ms": budget_ms, "hash_rounds": rounds})
 
 
 if __name__ == "__main__":

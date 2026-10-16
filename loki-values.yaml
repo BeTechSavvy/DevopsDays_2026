@@ -19,6 +19,24 @@ loki:
 
 singleBinary:
   replicas: 1
+  # pinned to node 1, away from the node-pressure scenario on node 2
+  nodeSelector:
+    kubernetes.io/hostname: minikube
+
+gateway:
+  nodeSelector:
+    kubernetes.io/hostname: minikube
+
+# The chart's memcached caches request ~8 GB by default -- far more than a
+# laptop minikube node has, so they'd sit Pending forever. Not needed here.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
 
 deploymentMode: SingleBinary
 

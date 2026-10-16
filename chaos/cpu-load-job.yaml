@@ -1,0 +1,69 @@
+# chaos/cpu-load-job.yaml
+#
+# Scenario (a): CPU exhaustion.
+#
+# A tiny in-cluster load generator that hammers flask-service /cpu-heavy
+# (~150 ms of SHA-256 hashing per request) with WORKERS back-to-back loops for DURATION
+# seconds. Going through the Service (not a port-forward) spreads requests
+# across BOTH flask pods, so both sit at their 250m CPU limit and
+# cpu_percent climbs to ~100%. It runs 4 minutes -- well past the 2-minute rate()
+# window in prometheus_source.py, so the spike isn't averaged away even if
+# the pod starts late (e.g. a slow image pull).
+#
+# Normally driven by chaos/cpu_exhaustion.py, which also cleans it up.
+# Manual use:
+#   kubectl apply -f chaos/cpu-load-job.yaml
+#   kubectl delete job chaos-cpu-load        # stop early / clean up
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chaos-cpu-load
+  labels:
+    chaos: cpu-exhaustion
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 360       # hard stop even if the script dies
+  ttlSecondsAfterFinished: 120     # auto-delete after finishing
+  template:
+    metadata:
+      labels:
+        chaos: cpu-exhaustion
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: load
+        image: busybox:1.36        # already cached in minikube
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TARGET
+          value: "http://flask-service:5000/cpu-heavy"
+        - name: DURATION
+          value: "240"
+        - name: WORKERS
+          value: "4"
+        command: ["sh", "-c"]
+        args:
+        - |
+          end=$(( $(date +%s) + DURATION ))
+          worker() {
+            n=0
+            while [ "$(date +%s)" -lt "$end" ]; do
+              wget -q -O /dev/null -T 5 "$TARGET" || true
+              n=$((n + 1))
+            done
+            echo "worker $1: $n requests"
+          }
+          echo "Loading $TARGET with $WORKERS workers for ${DURATION}s"
+          i=1
+          while [ "$i" -le "$WORKERS" ]; do worker "$i" & i=$((i + 1)); done
+          wait
+          echo "load finished"
+        # keep the load generator itself small -- the flask pods should be the ones busy
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

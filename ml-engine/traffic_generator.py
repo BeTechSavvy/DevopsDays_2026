@@ -11,6 +11,10 @@ enough to register as an "anomaly" at all).
                           and /spike-load
     Phase 3 (baseline):   back to normal /work traffic
 
+The error-spike part of phase 2 is appended to chaos/injections.jsonl as
+scenario "error_spike" (expected kind error_spike); eval/evaluate.py reports
+it as a separate validation row.
+
 Run this against a `kubectl port-forward svc/flask-service 30001:5000`
 tunnel rather than the NodePort directly -- port-forward has been the
 one reliable path to reach anything in the cluster all session,
@@ -23,11 +27,18 @@ Usage:
 """
 
 import os
+import sys
 import time
+from pathlib import Path
 
 import requests
 
-BASE_URL = os.environ.get("FLASK_URL", "http://127.0.0.1:30001")
+from config import FLASK_URL
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "chaos"))
+from common import log_injection, utc_now  # noqa: E402  (chaos/common.py: the ground-truth log)
+
+BASE_URL = FLASK_URL
 
 BASELINE_SECONDS = int(os.environ.get("BASELINE_SECONDS", 60))
 SPIKE_SECONDS = int(os.environ.get("SPIKE_SECONDS", 60))
@@ -63,7 +74,13 @@ def main():
         raise SystemExit(1)
 
     run_phase("Phase 1: baseline traffic", "/work", BASELINE_SECONDS)
-    run_phase("Phase 2: deliberate error spike", "/spike-errors", SPIKE_SECONDS // 2)
+    # the error spike is logged as ground truth (scenario "error_spike"), like the chaos/ scripts
+    start, completed = utc_now(), False
+    try:
+        run_phase("Phase 2: deliberate error spike", "/spike-errors", SPIKE_SECONDS // 2)
+        completed = True
+    finally:
+        log_injection("error_spike", start, utc_now(), "flask-deployment", "error_spike", completed)
     run_phase("Phase 2: deliberate load spike", "/spike-load", SPIKE_SECONDS // 2)
     run_phase("Phase 3: back to baseline", "/work", BASELINE_SECONDS)
 
