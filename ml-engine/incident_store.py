@@ -77,7 +77,8 @@ class IncidentStore:
                 return doc
         return None
 
-    def save_or_merge(self, incident: Incident, window: timedelta) -> tuple[dict, bool]:
+    def save_or_merge(self, incident: Incident, window: timedelta,
+                      create: bool = True) -> tuple[dict | None, bool]:
         """
         Saves a new incident, or folds it into an existing one that overlaps
         in time -- re-running the pipeline over the same window, or a failure
@@ -87,9 +88,14 @@ class IncidentStore:
         Returns (stored_doc, needs_diagnosis). needs_diagnosis is True for a
         new incident, or a merged one that has no diagnosis yet or just
         gained a kind of Kubernetes failure it didn't have before.
+
+        create=False only merges: with no overlapping incident, nothing is
+        written and (None, False) is returned.
         """
         doc = incident.to_dict()
         existing = self.find_overlapping(incident.start_time, incident.end_time, window)
+        if existing is None and not create:
+            return None, False
         if existing is None:
             self.collection.update_one({"incident_id": doc["incident_id"]}, {"$set": doc}, upsert=True)
             return doc, True
@@ -100,7 +106,16 @@ class IncidentStore:
         def reasons(d):
             return {(s["kind"], s["reason"]) for s in d.get("k8s_signals", [])}
 
-        needs_diagnosis = "diagnosis" not in existing or bool(reasons(doc) - reasons(existing))
+        diagnosis = existing.get("diagnosis")
+        rank = CorrelationEngine._SEVERITY_RANK
+        needs_diagnosis = (
+            diagnosis is None
+            or bool(reasons(doc) - reasons(existing))                           # new kind of k8s failure
+            or rank[merged["max_severity"]] > rank[existing["max_severity"]]    # got worse
+            # grew a lot since it was diagnosed (e.g. a small blip turned into a CPU spike);
+            # doubling keeps Gemini calls per incident logarithmic, not one per poll
+            or merged["anomaly_count"] >= 2 * max(diagnosis.get("based_on_anomalies", 1), 1)
+        )
         return merged, needs_diagnosis
 
     def save_diagnosis(self, incident_id: str, diagnosis: dict) -> None:

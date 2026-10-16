@@ -21,6 +21,18 @@ from sklearn.ensemble import IsolationForest
 from dataclasses import dataclass
 from typing import Optional
 
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
+
+# Isolation Forest scores flatten out around -0.1 for any point far outside
+# the training range, so the model alone rarely says "high" -- a pod pinned
+# at 94% CPU came out "medium". Any metric past these hard limits is high
+# regardless of the model's score.
+METRIC_HIGH_THRESHOLDS = {
+    "cpu_percent": 85,
+    "memory_percent": 85,
+    "error_rate": 25,
+}
+
 
 @dataclass
 class Anomaly:
@@ -83,16 +95,29 @@ class AnomalyDetector:
         for i, (pred, score) in enumerate(zip(predictions, raw_scores)):
             if pred == -1:
                 row = new_df.iloc[i]
+                snapshot = {col: row[col] for col in self.feature_columns}
                 anomalies.append(
                     Anomaly(
                         timestamp=row["timestamp"],
-                        metric_snapshot={col: row[col] for col in self.feature_columns},
+                        metric_snapshot=snapshot,
                         anomaly_score=float(score),
                         confidence=self._score_to_confidence(score),
-                        severity=self._score_to_severity(score),
+                        severity=max(
+                            self._score_to_severity(score),
+                            self._metric_severity(snapshot),
+                            key=_SEVERITY_RANK.__getitem__,
+                        ),
                     )
                 )
         return anomalies
+
+    @staticmethod
+    def _metric_severity(snapshot: dict) -> str:
+        """'high' if any metric is past its hard limit, else 'low' (defer to the model)."""
+        for col, limit in METRIC_HIGH_THRESHOLDS.items():
+            if snapshot.get(col, 0) > limit:
+                return "high"
+        return "low"
 
     @staticmethod
     def _score_to_confidence(raw_score: float) -> float:

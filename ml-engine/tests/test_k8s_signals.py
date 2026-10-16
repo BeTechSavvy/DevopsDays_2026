@@ -162,6 +162,50 @@ def test_merge_instead_of_duplicate():
         store.client.drop_database(TEST_DB)
 
 
+def _ml_incident(incident_id, t, cpu, severity):
+    return Incident(incident_id, t, t,
+                    [Anomaly(t, {"cpu_percent": cpu, "memory_percent": 12, "error_rate": 3}, -0.1, 0.57, severity)],
+                    severity, 0.57)
+
+
+def test_growing_ml_incident_gets_rediagnosed():
+    # Seen live in scenario (a): a low-severity blip was diagnosed, then a CPU
+    # spike merged into it and kept the stale "low CPU" diagnosis.
+    store = IncidentStore(db_name=TEST_DB)
+    if not store.is_connected():
+        print("  (skipped: MongoDB not reachable)")
+        return
+    store.collection.drop()
+    try:
+        t0 = pd.Timestamp("2026-09-24 05:50:00")
+        doc, _ = store.save_or_merge(_ml_incident("blip0001", t0, 1.4, "low"), WINDOW)
+        store.save_diagnosis(doc["incident_id"], {"summary": "low cpu", "based_on_anomalies": 1})
+
+        def add(minutes, cpu, severity):
+            t = t0 + pd.Timedelta(minutes=minutes)
+            return store.save_or_merge(_ml_incident(f"p{minutes:07.1f}", t, cpu, severity), WINDOW)
+
+        # 1 -> 2 anomalies (doubled) AND low -> medium: re-diagnose
+        doc, needs = add(1, 40, "medium")
+        assert doc["incident_id"] == "blip0001" and needs
+        store.save_diagnosis("blip0001", {"summary": "cpu", "based_on_anomalies": 2})
+
+        # 2 -> 3 anomalies, same severity: keep the diagnosis
+        doc, needs = add(1.5, 80, "medium")
+        assert not needs, doc["anomaly_count"]
+
+        # 3 -> 4 anomalies = 2x the 2 it was diagnosed on: re-diagnose
+        doc, needs = add(2, 93, "medium")
+        assert needs and doc["anomaly_count"] == 4
+
+        # legacy diagnosis without based_on_anomalies counts as based on 1
+        store.collection.update_one({"incident_id": "blip0001"}, {"$set": {"diagnosis": {"summary": "old"}}})
+        _, needs = add(2.5, 94, "medium")
+        assert needs
+    finally:
+        store.client.drop_database(TEST_DB)
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

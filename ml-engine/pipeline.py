@@ -72,6 +72,8 @@ def diagnose_incidents(rca, store, incidents):
             print(f"WARNING: RCA for incident {incident.incident_id} returned unparseable output. Saved without diagnosis.")
             continue
 
+        # lets store.save_or_merge tell when a growing incident's diagnosis is stale
+        diagnosis["based_on_anomalies"] = len(incident.anomalies)
         try:
             store.save_diagnosis(incident.incident_id, diagnosis)
         except Exception as e:
@@ -81,6 +83,35 @@ def diagnose_incidents(rca, store, incidents):
         diagnosed += 1
         print(f"  Diagnosed {incident.incident_id}: {diagnosis.get('summary', '')}")
     return diagnosed
+
+
+def is_weak(incident):
+    """
+    A lone low-severity ML anomaly with no Kubernetes signals. The detector
+    flags ~5% of perfectly normal points (contamination=0.05), and these were
+    all ordinary /work noise, so on their own they don't open an incident.
+    """
+    return incident.detection == "ml" and len(incident.anomalies) < 2 and incident.max_severity == "low"
+
+
+def save_incidents(store, incidents, window):
+    """
+    Saves/merges each incident. Weak ones may only merge into an existing
+    incident, never open a new one. Returns (new, merged, skipped, to_diagnose).
+    """
+    new, merged, skipped, to_diagnose = 0, 0, 0, []
+    for incident in incidents:
+        doc, needs_diagnosis = store.save_or_merge(incident, window, create=not is_weak(incident))
+        if doc is None:
+            skipped += 1
+            continue
+        if doc["incident_id"] == incident.incident_id:
+            new += 1
+        else:
+            merged += 1
+        if needs_diagnosis:
+            to_diagnose.append(Incident.from_dict(doc))
+    return new, merged, skipped, to_diagnose
 
 
 def run_once(client, detector, engine, store, minutes_back, since=None, rca=None):
@@ -104,19 +135,12 @@ def run_once(client, detector, engine, store, minutes_back, since=None, rca=None
         print(f"[{last_seen}] {len(df)} points scored, no anomalies, no Kubernetes signals.")
         return last_seen
 
-    new, merged, to_diagnose = 0, 0, []
-    for incident in incidents:
-        doc, needs_diagnosis = store.save_or_merge(incident, engine.time_window)
-        if doc["incident_id"] == incident.incident_id:
-            new += 1
-        else:
-            merged += 1
-        if needs_diagnosis:
-            to_diagnose.append(Incident.from_dict(doc))
+    new, merged, skipped, to_diagnose = save_incidents(store, incidents, engine.time_window)
 
     print(
         f"[{last_seen}] {len(anomalies)} anomalies, {len(signals)} k8s signal samples "
-        f"({len(rule_incidents)} rule-only incidents) -> {new} new, {merged} merged into existing incidents."
+        f"({len(rule_incidents)} rule-only incidents) -> {new} new, {merged} merged into existing incidents"
+        + (f", {skipped} single weak anomalies ignored." if skipped else ".")
     )
     if rca is not None and to_diagnose:
         diagnosed = diagnose_incidents(rca, store, to_diagnose)
