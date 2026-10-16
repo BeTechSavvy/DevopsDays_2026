@@ -10,25 +10,32 @@
 #   localhost:30001 Flask app
 #   localhost:3100  Loki (via loki-gateway)
 #   localhost:3000  Grafana (user admin, password: see RUNBOOK.md)
+#   localhost:3101  Promtail (its /targets page; Promtail has no Service, so
+#                   this forwards to one of its pods, looked up on each reconnect)
 
 $forwards = @(
     @{ Name = "prometheus"; Args = "svc/monitoring-kube-prometheus-prometheus 9090:9090" },
     @{ Name = "flask";      Args = "svc/flask-service 30001:5000" },
     @{ Name = "loki";       Args = "svc/loki-gateway 3100:80" },
-    @{ Name = "grafana";    Args = "svc/monitoring-grafana 3000:80" }
+    @{ Name = "grafana";    Args = "svc/monitoring-grafana 3000:80" },
+    @{ Name = "promtail";   Args = "label:app.kubernetes.io/name=promtail 3101:3101" }
 )
 
 $jobs = foreach ($f in $forwards) {
     Start-Job -Name $f.Name -ArgumentList $f.Args -ScriptBlock {
         param($pfArgs)
         while ($true) {
-            & kubectl port-forward @($pfArgs -split " ") 2>&1 | Out-Null
+            $parts = @($pfArgs -split " ")
+            if ($parts[0] -like "label:*") {   # a pod chosen by label, e.g. a DaemonSet's
+                $parts[0] = kubectl get pod -l $parts[0].Substring(6) -o name 2>$null | Select-Object -First 1
+            }
+            if ($parts[0]) { & kubectl port-forward @parts 2>&1 | Out-Null }
             Start-Sleep -Seconds 2   # tunnel dropped: reopen it
         }
     }
 }
 
-Write-Host "Port-forwards running: Prometheus :9090, Flask :30001, Loki :3100, Grafana :3000. Ctrl+C to stop."
+Write-Host "Port-forwards running: Prometheus :9090, Flask :30001, Loki :3100, Grafana :3000, Promtail :3101. Ctrl+C to stop."
 try {
     while ($true) { Start-Sleep -Seconds 60 }
 } finally {
