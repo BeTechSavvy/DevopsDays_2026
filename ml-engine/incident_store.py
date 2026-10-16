@@ -186,6 +186,10 @@ class IncidentStore:
             upsert=True,
         )
 
+    def count_llm_call(self, incident_id: str) -> None:
+        """+1 on the incident's llm_calls counter (one per Gemini call, failed ones included)."""
+        self.collection.update_one({"incident_id": incident_id}, {"$inc": {"llm_calls": 1}})
+
     def get_recent_incidents(self, limit: int = 20) -> list[dict]:
         """Fetch the most recent incidents, newest first."""
         cursor = self.collection.find({}, {"start_dt": 0, "end_dt": 0}).sort("start_dt", DESCENDING).limit(limit)

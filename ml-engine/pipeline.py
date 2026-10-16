@@ -30,9 +30,11 @@ Usage:
 """
 
 import argparse
+import json
 import time
 import traceback
 from datetime import timedelta
+from pathlib import Path
 
 import pandas as pd
 
@@ -45,6 +47,7 @@ from prometheus_source import PrometheusClient
 
 FEATURE_COLUMNS = ["cpu_percent", "memory_percent", "error_rate"]
 MIN_BASELINE_ROWS = 20
+CYCLE_LOG = Path(__file__).resolve().parent / "logs" / "cycle_times.jsonl"
 
 
 def create_rca_engine():
@@ -65,15 +68,25 @@ def _short_error(e, limit=150):
     return f"{type(e).__name__}: {text}"
 
 
-def diagnose_incidents(rca, store, incidents):
-    """Diagnoses each incident and attaches the result. Never raises."""
+def diagnose_incidents(rca, store, incidents, stats=None):
+    """
+    Diagnoses each incident and attaches the result. Never raises. Every
+    Gemini call, successful or not, is counted on the incident (llm_calls)
+    and in `stats` (llm_calls, llm_seconds) for the cycle-time log.
+    """
     diagnosed = 0
     for incident in incidents:
+        started = time.perf_counter()
         try:
+            store.count_llm_call(incident.incident_id)
             diagnosis = rca.diagnose(incident, persist=False)
         except Exception as e:
             print(f"WARNING: RCA failed for incident {incident.incident_id} ({_short_error(e)}). Saved without diagnosis.")
             continue
+        finally:
+            if stats is not None:
+                stats["llm_calls"] = stats.get("llm_calls", 0) + 1
+                stats["llm_seconds"] = stats.get("llm_seconds", 0.0) + time.perf_counter() - started
 
         if "error" in diagnosis:
             # rca_engine caught a failed Gemini call
@@ -118,7 +131,9 @@ def save_incidents(store, incidents, window):
         if doc is None:
             skipped += 1
             continue
-        if doc["incident_id"] == incident.incident_id:
+        # ids are deterministic, so a merge can keep the same id; only a newly
+        # created incident carries stored_at (merges keep the original one in Mongo)
+        if "stored_at" in doc:
             new += 1
         else:
             merged += 1
@@ -166,7 +181,17 @@ def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_inci
     return detector, f"fitted on {len(df)} points from [now-{start_minutes}m, now-{end_minutes}m]{note}"
 
 
-def run_once(client, detector, engine, store, minutes_back, since=None, rca=None):
+def log_cycle(seconds, stats, ok=True):
+    """One line per pipeline cycle in logs/cycle_times.jsonl, read by eval/evaluate.py."""
+    CYCLE_LOG.parent.mkdir(exist_ok=True)
+    record = {"time": str(pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s")), "seconds": round(seconds, 3),
+              "llm_calls": stats.get("llm_calls", 0), "llm_seconds": round(stats.get("llm_seconds", 0.0), 3),
+              "ok": ok}
+    with open(CYCLE_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def run_once(client, detector, engine, store, minutes_back, since=None, rca=None, stats=None):
     df = client.get_metrics_dataframe(minutes_back=minutes_back)
     if since is not None:
         df = df[df["timestamp"] > since]
@@ -195,7 +220,7 @@ def run_once(client, detector, engine, store, minutes_back, since=None, rca=None
         + (f", {skipped} single weak anomalies ignored." if skipped else ".")
     )
     if rca is not None and to_diagnose:
-        diagnosed = diagnose_incidents(rca, store, to_diagnose)
+        diagnosed = diagnose_incidents(rca, store, to_diagnose, stats)
         print(f"RCA: {diagnosed}/{len(to_diagnose)} incidents diagnosed.")
 
     return last_seen
@@ -273,12 +298,24 @@ def main():
                     else:
                         detector = refit
                         print(f"Baseline refitted: {message}.")
-                last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back, since=last_seen, rca=rca)
+            except Exception:
+                print("Refit failed, keeping the current baseline. Traceback:")
+                traceback.print_exc()
+
+            stats, started = {}, time.perf_counter()
+            try:
+                last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back,
+                                     since=last_seen, rca=rca, stats=stats)
+                log_cycle(time.perf_counter() - started, stats)
             except Exception:
                 # Any failure in one cycle (Prometheus, Mongo, a bug) must not stop the loop.
                 # last_seen is left unchanged, so the next poll re-covers this window.
                 print(f"Poll failed. Retrying in {args.interval}s. Traceback:")
                 traceback.print_exc()
+                try:
+                    log_cycle(time.perf_counter() - started, stats, ok=False)
+                except OSError:
+                    pass
     except KeyboardInterrupt:
         print("\nStopped.")
 
