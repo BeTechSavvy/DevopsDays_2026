@@ -10,7 +10,7 @@ chaos/injections.jsonl and the incidents stored in MongoDB, then reports
     failure kind (ml-engine/failure_kinds.py)
   - MTTD: incident stored_at minus injection start
   - RCA accuracy, graded by hand: diagnosed detections are exported to
-    eval/rca_labels.csv with an empty `correct` column; fill in y/n and
+    eval/rca_labels.csv with an empty `correct` column; fill in yes/partial/no and
     re-run to include the grades (existing grades are kept)
   - Gemini calls per incident (the incident's llm_calls counter)
   - pipeline cycle time with and without Gemini calls
@@ -105,19 +105,38 @@ def load_incidents(store, start, end) -> list[dict]:
 
 # --- RCA grading ------------------------------------------------------------
 
-def _grade(value: str) -> bool | None:
+RCA_RULE = ("Grading rule: **yes** = the diagnosis names the injected cause; **partial** = it identifies CPU as "
+            "the problem but not the load driving it; **no** = it blames a different cause. error_spike's injected "
+            "cause is the app returning HTTP 500s from /spike-errors, so \"application-level errors\" counts as yes. "
+            "Accuracy = yes ÷ graded; weighted = (yes + 0.5 × partial) ÷ graded. Rows in `rca_labels.csv` for "
+            "incidents outside this evaluation (pre-evaluation test runs) are not counted.")
+
+
+def _grade(value: str) -> str | None:
+    """'yes' / 'partial' / 'no', or None if not graded yet."""
     v = (value or "").strip().lower()
     if v in ("y", "yes", "1", "true", "correct"):
-        return True
+        return "yes"
+    if v in ("p", "partial", "partly", "0.5"):
+        return "partial"
     if v in ("n", "no", "0", "false", "wrong", "incorrect"):
-        return False
+        return "no"
     return None
+
+
+def rca_scores(grades: list) -> dict:
+    """Counts of yes/partial/no, accuracy = yes / graded, weighted = (yes + 0.5 partial) / graded."""
+    g = [x for x in grades if x is not None]
+    yes, partial, no = (g.count(k) for k in ("yes", "partial", "no"))
+    return {"graded": len(g), "yes": yes, "partial": partial, "no": no,
+            "accuracy": yes / len(g) if g else None,
+            "weighted": (yes + 0.5 * partial) / len(g) if g else None}
 
 
 def sync_rca_labels(matches) -> dict:
     """
     Adds every diagnosed detection to rca_labels.csv (keeping existing rows
-    and grades), then returns the grades: {incident_id: True/False/None}.
+    and grades), then returns the grades: {incident_id: "yes"/"partial"/"no"/None}.
     """
     rows = {}
     if LABELS.exists():
@@ -230,8 +249,7 @@ def per_scenario_extras(matches, grades) -> dict:
         # shows up as a node incident AND an incident for the evicted workload
         kind_ok = [m.injection.expected_kind in set().union(*(incident_kinds(d) for d in m.incidents))
                    for m in detected]
-        graded = [grades.get(m.first["incident_id"]) for m in detected]
-        graded = [g for g in graded if g is not None]
+        rca = rca_scores([grades.get(m.first["incident_id"]) for m in detected])
         mttd = [m.mttd_seconds() for m in detected if m.mttd_seconds() is not None]
         llm = [m.first.get("llm_calls", 0) for m in detected]
         lead = [t for t in (prediction_lead_time(m) for m in detected) if t is not None]
@@ -239,8 +257,9 @@ def per_scenario_extras(matches, grades) -> dict:
             "prediction_lead_seconds": _stats(lead),
             "kind_accuracy": sum(kind_ok) / len(kind_ok) if kind_ok else None,
             "diagnosed": sum(bool(m.first.get("diagnosis")) for m in detected),
-            "rca_graded": len(graded),
-            "rca_accuracy": sum(graded) / len(graded) if graded else None,
+            "rca": rca,
+            "rca_graded": rca["graded"],
+            "rca_accuracy": rca["accuracy"],
             "mttd_seconds": _stats(mttd),
             "llm_calls_per_incident": _stats(llm),
         }
@@ -285,19 +304,25 @@ def write_markdown(result: dict) -> None:
                       "scenario targets."]
 
     lines += ["", "## Diagnosis and timing", "",
-              "| Scenario | Kind correct | Diagnosed | RCA correct (graded) | MTTD mean (s) | MTTD max (s) "
-              "| Gemini calls / incident (mean, max) |",
-              "|---|---:|---:|---:|---:|---:|---:|"]
+              "| Scenario | Kind correct | Diagnosed | RCA yes / partial / no | RCA accuracy | RCA weighted "
+              "| MTTD mean (s) | MTTD max (s) | Gemini calls / incident (mean, max) |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for s in _order(ex):
         e, tp = ex[s], sc[s]["tp"]
         llm = e["llm_calls_per_incident"]
         lines.append(
             f"| {s} | {_fmt(e['kind_accuracy'], pct=True)} | {e['diagnosed']}/{tp} | "
-            f"{_fmt(e['rca_accuracy'], pct=True)} ({e['rca_graded']}) | {_fmt(e['mttd_seconds']['mean'], digits=0)} | "
+            f"{e['rca']['yes']} / {e['rca']['partial']} / {e['rca']['no']} | {_fmt(e['rca']['accuracy'], pct=True)} | "
+            f"{_fmt(e['rca']['weighted'], pct=True)} | {_fmt(e['mttd_seconds']['mean'], digits=0)} | "
             f"{_fmt(e['mttd_seconds']['max'], digits=0)} | {_fmt(llm['mean'])}, {_fmt(llm['max'], digits=0)} |")
     rca = result["rca_overall"]
-    lines += ["", f"RCA accuracy overall: {_fmt(rca['accuracy'], pct=True)} of {rca['graded']} graded "
-                  f"({rca['ungraded']} still ungraded in `eval/rca_labels.csv`)."]
+    lines += ["", RCA_RULE, "",
+              f"RCA accuracy overall (Overall scenarios, excluding the error_spike validation row): "
+              f"{_fmt(rca['accuracy'], pct=True)} yes, {_fmt(rca['weighted'], pct=True)} weighted, of "
+              f"{rca['graded']} graded ({rca['yes']} yes / {rca['partial']} partial / {rca['no']} no); "
+              f"including error_spike: {_fmt(rca['all']['accuracy'], pct=True)} yes, "
+              f"{_fmt(rca['all']['weighted'], pct=True)} weighted, of {rca['all']['graded']}. "
+              f"{rca['ungraded']} diagnosed detection(s) still ungraded in `eval/rca_labels.csv`."]
     if "diagnosed" in rca:
         skipped = rca["detected"] - rca["diagnosed"]
         models = ", ".join(f"`{m}`" for m in rca["models"]) or "–"
@@ -368,19 +393,27 @@ def write_markdown(result: dict) -> None:
         lines.append(f"| {n} | {m['scenario']} | {m['start'][11:19]} → {m['end'][11:19]} | {ids} | "
                      f"{_fmt(m['mttd_seconds'], digits=0)} |")
 
-    lines += ["", "## Known limitation: demo-db-app baseline noise", "",
-              "demo-db-app's metrics are almost flat (CPU ~2%, memory ~11.5%, no errors), so its Isolation "
+    lines += ["", "## Known limitations", "",
+              "- **demo-db-app baseline noise.** demo-db-app's metrics are almost flat (CPU ~2%, memory ~11.5%, no errors), so its Isolation "
               "Forest baseline is very tight and small wobbles become low/medium ML-only incidents with no "
               "Kubernetes signals. They overlap no injection, so they count as false positives, attributed "
               "to db_failure (the scenario that targets demo-db-app). Not fixed during the evaluation.",
+              "- **cpu_exhaustion diagnoses were weak.** flask-deployment's normal 7–13% HTTP 500 baseline "
+              "dominates the log evidence, so Gemini attributes the CPU incident to an app bug. Future work: pass "
+              "CPU %-of-limit explicitly in the prompt and filter baseline errors from the evidence. The RCA code "
+              "was not changed for this evaluation.",
               "", "## Other notes", "",
               "- **MTTD** is the incident's `stored_at` minus the injection start. When an injection merges into "
               "an incident that noise had already opened, the detection is real but MTTD is negative and says "
               "nothing about detection speed (error_spike round 3 on the fixed code: an incident opened by noise "
               "97 s earlier absorbed it).",
-              "- **cpu_exhaustion kind**: the load job drives CPU to 75–85% of the pods' limit, just under the "
-              "85% `cpu_saturation` threshold, so the CPU incidents are detected but without that kind. The "
-              "threshold was not changed during the evaluation."]
+              "- **cpu_exhaustion kind**: the load job drives CPU to 75–85% of the pods' limit, right around the "
+              "85% `cpu_saturation` threshold, so the CPU incidents are detected but mostly without that kind. "
+              "When the evaluation finished (results committed in `efa69b6`) this was 0 of 4. The 1 of 4 shown "
+              "now is incident `09298360` (extra cpu_exhaustion round 2): a pipeline restart at ~12:53 UTC, after "
+              "the evaluation, re-scanned the recent window at slightly different sample times and merged an "
+              "85.6% sample (12:32:36) into it. Nothing else in these results changed. The threshold was not "
+              "changed during the evaluation."]
     lines += ["", "![F1 by scenario](f1_by_scenario.png)", ""]
     RESULTS_MD.write_text("\n".join(lines), encoding="utf-8")
 
@@ -446,14 +479,17 @@ def main():
     extras = per_scenario_extras(matches, grades)
 
     detected_ids = {m.first["incident_id"] for m in matches if m.detected and m.first.get("diagnosis")}
-    graded = [grades[i] for i in detected_ids if grades.get(i) is not None]
+    def first_ids(include_separate):
+        return [m.first["incident_id"] for m in matches if m.detected and m.first.get("diagnosis")
+                and (include_separate or m.injection.scenario not in SEPARATE)]
+    main_rca = rca_scores([grades.get(i) for i in first_ids(False)])
+    all_rca = rca_scores([grades.get(i) for i in first_ids(True)])
     result = {
         "generated": str(ts(pd.Timestamp.now(tz="UTC")).floor("s")),
         "period": {"start": str(period_start.floor("s")), "end": str(period_end.floor("s"))},
         "n_injections": len(injections), "n_incidents": len(incidents),
         "scores": scores, "extras": extras,
-        "rca_overall": {"graded": len(graded), "ungraded": len(detected_ids) - len(graded),
-                        "accuracy": sum(graded) / len(graded) if graded else None,
+        "rca_overall": {**main_rca, "all": all_rca, "ungraded": len(detected_ids) - all_rca["graded"],
                         "backfilled": sum(bool(m.first["diagnosis"].get("backfilled"))
                                           for m in matches if m.detected and m.first.get("diagnosis")),
                         "detected": sum(m.detected for m in matches),

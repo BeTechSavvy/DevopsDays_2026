@@ -124,3 +124,13 @@ def test_pipeline_usage_keeps_samples_inside_the_period(tmp_path):
     assert u["working_set_mb"]["max"] == 220.0
     assert pipeline_usage(pd.Timestamp("2026-10-16 08:30"), pd.Timestamp("2026-10-16 10:00"),
                           tmp_path / "missing.csv")["cpu_percent"]["n"] == 0
+
+
+def test_rca_grades_yes_partial_no():
+    from evaluate import _grade, rca_scores
+    assert [_grade(v) for v in ("yes", "Y", "partial", "p", "no", "", None)] == \
+        ["yes", "yes", "partial", "partial", "no", None, None]
+    s = rca_scores(["yes", "yes", "partial", "no", None])
+    assert (s["graded"], s["yes"], s["partial"], s["no"]) == (4, 2, 1, 1)
+    assert s["accuracy"] == 0.5 and s["weighted"] == 0.625
+    assert rca_scores([None])["accuracy"] is None

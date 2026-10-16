@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-16 12:50:27",
+  "generated": "2026-10-16 14:01:24",
   "period": {
     "start": "2026-10-16 08:35:33",
     "end": "2026-10-16 12:51:28"
@@ -103,8 +103,16 @@
       },
       "kind_accuracy": 1.0,
       "diagnosed": 3,
-      "rca_graded": 0,
-      "rca_accuracy": null,
+      "rca": {
+        "graded": 3,
+        "yes": 3,
+        "partial": 0,
+        "no": 0,
+        "accuracy": 1.0,
+        "weighted": 1.0
+      },
+      "rca_graded": 3,
+      "rca_accuracy": 1.0,
       "mttd_seconds": {
         "n": 3,
         "mean": 171.03143033333333,
@@ -133,8 +141,16 @@
       },
       "kind_accuracy": 0.6666666666666666,
       "diagnosed": 3,
-      "rca_graded": 0,
-      "rca_accuracy": null,
+      "rca": {
+        "graded": 3,
+        "yes": 3,
+        "partial": 0,
+        "no": 0,
+        "accuracy": 1.0,
+        "weighted": 1.0
+      },
+      "rca_graded": 3,
+      "rca_accuracy": 1.0,
       "mttd_seconds": {
         "n": 3,
         "mean": -273.40224366666666,
@@ -142,96 +158,6 @@
         "p95": 83.600592,
         "min": -924.538113,
         "max": 83.600592
-      },
-      "llm_calls_per_incident": {
-        "n": 3,
-        "mean": 1.0,
-        "median": 1,
-        "p95": 1,
-        "min": 1,
-        "max": 1
-      }
-    },
-    "error_spike": {
-      "prediction_lead_seconds": {
-        "n": 0,
-        "mean": null,
-        "median": null,
-        "p95": null,
-        "min": null,
-        "max": null
-      },
-      "kind_accuracy": 0.75,
-      "diagnosed": 4,
-      "rca_graded": 0,
-      "rca_accuracy": null,
-      "mttd_seconds": {
-        "n": 4,
-        "mean": -665.549049,
-        "median": -28.145438000000002,
-        "p95": 43.204945,
-        "min": -2649.110265,
-        "max": 43.204945
-      },
-      "llm_calls_per_incident": {
-        "n": 4,
-        "mean": 1.0,
-        "median": 1.0,
-        "p95": 1,
-        "min": 1,
-        "max": 1
-      }
-    },
-    "cpu_exhaustion": {
-      "prediction_lead_seconds": {
-        "n": 0,
-        "mean": null,
-        "median": null,
-        "p95": null,
-        "min": null,
-        "max": null
-      },
-      "kind_accuracy": 0.0,
-      "diagnosed": 4,
-      "rca_graded": 0,
-      "rca_accuracy": null,
-      "mttd_seconds": {
-        "n": 4,
-        "mean": 42.27820775,
-        "median": 43.924542,
-        "p95": 58.621581,
-        "min": 22.642166,
-        "max": 58.621581
-      },
-      "llm_calls_per_incident": {
-        "n": 4,
-        "mean": 1.0,
-        "median": 1.0,
-        "p95": 1,
-        "min": 1,
-        "max": 1
-      }
-    },
-    "crashloop": {
-      "prediction_lead_seconds": {
-        "n": 0,
-        "mean": null,
-        "median": null,
-        "p95": null,
-        "min": null,
-        "max": null
-      },
-      "kind_accuracy": 1.0,
-      "diagnosed": 3,
-      "rca_graded": 0,
-      "rca_accuracy": null,
-      "mttd_seconds": {
-        "n": 3,
-        "mean": 54.30262533333334,
-        "median": 54.927033,
-        "p95": 76.733889,
-        "min": 31.246954,
-        "max": 76.733889
       },
       "llm_calls_per_incident": {
         "n": 3,
@@ -253,8 +179,16 @@
       },
       "kind_accuracy": 1.0,
       "diagnosed": 3,
-      "rca_graded": 0,
-      "rca_accuracy": null,
+      "rca": {
+        "graded": 3,
+        "yes": 3,
+        "partial": 0,
+        "no": 0,
+        "accuracy": 1.0,
+        "weighted": 1.0
+      },
+      "rca_graded": 3,
+      "rca_accuracy": 1.0,
       "mttd_seconds": {
         "n": 3,
         "mean": 103.29581333333333,
@@ -283,8 +217,16 @@
       },
       "kind_accuracy": 1.0,
       "diagnosed": 3,
-      "rca_graded": 0,
-      "rca_accuracy": null,
+      "rca": {
+        "graded": 3,
+        "yes": 3,
+        "partial": 0,
+        "no": 0,
+        "accuracy": 1.0,
+        "weighted": 1.0
+      },
+      "rca_graded": 3,
+      "rca_accuracy": 1.0,
       "mttd_seconds": {
         "n": 3,
         "mean": 62.86708066666667,
@@ -301,12 +243,138 @@
         "min": 1,
         "max": 2
       }
+    },
+    "error_spike": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 0.75,
+      "diagnosed": 4,
+      "rca": {
+        "graded": 4,
+        "yes": 3,
+        "partial": 0,
+        "no": 1,
+        "accuracy": 0.75,
+        "weighted": 0.75
+      },
+      "rca_graded": 4,
+      "rca_accuracy": 0.75,
+      "mttd_seconds": {
+        "n": 4,
+        "mean": -665.549049,
+        "median": -28.145438000000002,
+        "p95": 43.204945,
+        "min": -2649.110265,
+        "max": 43.204945
+      },
+      "llm_calls_per_incident": {
+        "n": 4,
+        "mean": 1.0,
+        "median": 1.0,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "crashloop": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 1.0,
+      "diagnosed": 3,
+      "rca": {
+        "graded": 3,
+        "yes": 3,
+        "partial": 0,
+        "no": 0,
+        "accuracy": 1.0,
+        "weighted": 1.0
+      },
+      "rca_graded": 3,
+      "rca_accuracy": 1.0,
+      "mttd_seconds": {
+        "n": 3,
+        "mean": 54.30262533333334,
+        "median": 54.927033,
+        "p95": 76.733889,
+        "min": 31.246954,
+        "max": 76.733889
+      },
+      "llm_calls_per_incident": {
+        "n": 3,
+        "mean": 1.0,
+        "median": 1,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "cpu_exhaustion": {
+      "prediction_lead_seconds": {
+        "n": 0,
+        "mean": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "kind_accuracy": 0.25,
+      "diagnosed": 4,
+      "rca": {
+        "graded": 4,
+        "yes": 0,
+        "partial": 2,
+        "no": 2,
+        "accuracy": 0.0,
+        "weighted": 0.25
+      },
+      "rca_graded": 4,
+      "rca_accuracy": 0.0,
+      "mttd_seconds": {
+        "n": 4,
+        "mean": 42.27820775,
+        "median": 43.924542,
+        "p95": 58.621581,
+        "min": 22.642166,
+        "max": 58.621581
+      },
+      "llm_calls_per_incident": {
+        "n": 4,
+        "mean": 1.0,
+        "median": 1.0,
+        "p95": 1,
+        "min": 1,
+        "max": 1
+      }
     }
   },
   "rca_overall": {
-    "graded": 0,
-    "ungraded": 23,
-    "accuracy": null,
+    "graded": 19,
+    "yes": 15,
+    "partial": 2,
+    "no": 2,
+    "accuracy": 0.7894736842105263,
+    "weighted": 0.8421052631578947,
+    "all": {
+      "graded": 23,
+      "yes": 18,
+      "partial": 2,
+      "no": 3,
+      "accuracy": 0.782608695652174,
+      "weighted": 0.8260869565217391
+    },
+    "ungraded": 0,
     "backfilled": 23,
     "detected": 23,
     "diagnosed": 23,
@@ -316,10 +384,10 @@
   },
   "cycle_times": {
     "without_llm": {
-      "n": 302,
-      "mean": 1.2014370860927153,
-      "median": 0.702,
-      "p95": 5.074,
+      "n": 332,
+      "mean": 1.2437530120481928,
+      "median": 0.7315,
+      "p95": 5.11,
       "min": 0.145,
       "max": 9.354
     },
@@ -399,7 +467,7 @@
         "start": "2026-10-16 12:30:37",
         "detected": true,
         "incident_id": "09298360",
-        "kind_correct": false,
+        "kind_correct": true,
         "mttd_seconds": 43.023647
       },
       {

@@ -1,6 +1,6 @@
 # Evaluation results
 
-Generated 2026-10-16 12:50:27 UTC from 24 injections in `chaos/injections.jsonl` and 36 incidents in MongoDB (2026-10-16 08:35:33 → 2026-10-16 12:51:28).
+Generated 2026-10-16 14:01:24 UTC from 24 injections in `chaos/injections.jsonl` and 36 incidents in MongoDB (2026-10-16 08:35:33 → 2026-10-16 12:51:28).
 
 A detection (TP) is an incident of the injected workload overlapping [start, end + 3 min]. Duplicates are extra incidents for an already-detected injection (not counted as FP). error_spike is a separate validation row, not part of Overall.
 
@@ -19,17 +19,19 @@ A detection (TP) is an incident of the injected workload overlapping [start, end
 
 ## Diagnosis and timing
 
-| Scenario | Kind correct | Diagnosed | RCA correct (graded) | MTTD mean (s) | MTTD max (s) | Gemini calls / incident (mean, max) |
-|---|---:|---:|---:|---:|---:|---:|
-| cpu_exhaustion | 0% | 4/4 | – (0) | 42 | 59 | 1.00, 1 |
-| oom_killed | 100% | 3/3 | – (0) | 171 | 188 | 1.00, 1 |
-| crashloop | 100% | 3/3 | – (0) | 54 | 77 | 1.00, 1 |
-| failed_rollout | 100% | 3/3 | – (0) | 63 | 76 | 1.33, 2 |
-| node_pressure | 100% | 3/3 | – (0) | 103 | 121 | 1.00, 1 |
-| db_failure | 67% | 3/3 | – (0) | -273 | 84 | 1.00, 1 |
-| error_spike | 75% | 4/4 | – (0) | -666 | 43 | 1.00, 1 |
+| Scenario | Kind correct | Diagnosed | RCA yes / partial / no | RCA accuracy | RCA weighted | MTTD mean (s) | MTTD max (s) | Gemini calls / incident (mean, max) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cpu_exhaustion | 25% | 4/4 | 0 / 2 / 2 | 0% | 25% | 42 | 59 | 1.00, 1 |
+| oom_killed | 100% | 3/3 | 3 / 0 / 0 | 100% | 100% | 171 | 188 | 1.00, 1 |
+| crashloop | 100% | 3/3 | 3 / 0 / 0 | 100% | 100% | 54 | 77 | 1.00, 1 |
+| failed_rollout | 100% | 3/3 | 3 / 0 / 0 | 100% | 100% | 63 | 76 | 1.33, 2 |
+| node_pressure | 100% | 3/3 | 3 / 0 / 0 | 100% | 100% | 103 | 121 | 1.00, 1 |
+| db_failure | 67% | 3/3 | 3 / 0 / 0 | 100% | 100% | -273 | 84 | 1.00, 1 |
+| error_spike | 75% | 4/4 | 3 / 0 / 1 | 75% | 75% | -666 | 43 | 1.00, 1 |
 
-RCA accuracy overall: – of 0 graded (23 still ungraded in `eval/rca_labels.csv`).
+Grading rule: **yes** = the diagnosis names the injected cause; **partial** = it identifies CPU as the problem but not the load driving it; **no** = it blames a different cause. error_spike's injected cause is the app returning HTTP 500s from /spike-errors, so "application-level errors" counts as yes. Accuracy = yes ÷ graded; weighted = (yes + 0.5 × partial) ÷ graded. Rows in `rca_labels.csv` for incidents outside this evaluation (pre-evaluation test runs) are not counted.
+
+RCA accuracy overall (Overall scenarios, excluding the error_spike validation row): 79% yes, 84% weighted, of 19 graded (15 yes / 2 partial / 2 no); including error_spike: 78% yes, 83% weighted, of 23. 0 diagnosed detection(s) still ungraded in `eval/rca_labels.csv`.
 
 RCA diagnoses: 23 of 23 detections diagnosed, 0 skipped; model: `gemini-flash-lite-latest`. The pipeline ran with `--no-rca`; diagnoses were made afterwards by `eval/rca_backfill.py --priority-since` (fixed-code runs first, then the latest rounds), one call per detection.
 
@@ -49,7 +51,7 @@ All cycles in `ml-engine/logs/cycle_times.jsonl` (every pipeline run logged on t
 
 | Cycles | n | mean | median | p95 | max |
 |---|---:|---:|---:|---:|---:|
-| without Gemini calls | 302 | 1.20 | 0.70 | 5.07 | 9.35 |
+| without Gemini calls | 332 | 1.24 | 0.73 | 5.11 | 9.35 |
 | with Gemini calls | 12 | 21.35 | 9.60 | 54.01 | 73.60 |
 | with Gemini calls, minus Gemini time | 12 | 0.65 | 0.24 | 1.02 | 3.88 |
 
@@ -68,7 +70,7 @@ A subset of the main table, same matching rules; see *Defect found during evalua
 
 | Scenario | Injections | Detected | Recall | Kind correct | MTTD mean (s) | MTTD max (s) |
 |---|---:|---:|---:|---:|---:|---:|
-| cpu_exhaustion | 3 | 3 | 1.00 | 0% | 37 | 45 |
+| cpu_exhaustion | 3 | 3 | 1.00 | 33% | 37 | 45 |
 | error_spike | 3 | 3 | 1.00 | 67% | -4 | 43 |
 
 flask-deployment false positives after the fix: 0.
@@ -115,13 +117,14 @@ flask-deployment false positives after the fix: 0.
 | 23 | cpu_exhaustion | 12:30:37 → 12:34:56 | `09298360` | 43 |
 | 24 | error_spike | 12:41:58 → 12:42:28 | `ffdf37f7` | 43 |
 
-## Known limitation: demo-db-app baseline noise
+## Known limitations
 
-demo-db-app's metrics are almost flat (CPU ~2%, memory ~11.5%, no errors), so its Isolation Forest baseline is very tight and small wobbles become low/medium ML-only incidents with no Kubernetes signals. They overlap no injection, so they count as false positives, attributed to db_failure (the scenario that targets demo-db-app). Not fixed during the evaluation.
+- **demo-db-app baseline noise.** demo-db-app's metrics are almost flat (CPU ~2%, memory ~11.5%, no errors), so its Isolation Forest baseline is very tight and small wobbles become low/medium ML-only incidents with no Kubernetes signals. They overlap no injection, so they count as false positives, attributed to db_failure (the scenario that targets demo-db-app). Not fixed during the evaluation.
+- **cpu_exhaustion diagnoses were weak.** flask-deployment's normal 7–13% HTTP 500 baseline dominates the log evidence, so Gemini attributes the CPU incident to an app bug. Future work: pass CPU %-of-limit explicitly in the prompt and filter baseline errors from the evidence. The RCA code was not changed for this evaluation.
 
 ## Other notes
 
 - **MTTD** is the incident's `stored_at` minus the injection start. When an injection merges into an incident that noise had already opened, the detection is real but MTTD is negative and says nothing about detection speed (error_spike round 3 on the fixed code: an incident opened by noise 97 s earlier absorbed it).
-- **cpu_exhaustion kind**: the load job drives CPU to 75–85% of the pods' limit, just under the 85% `cpu_saturation` threshold, so the CPU incidents are detected but without that kind. The threshold was not changed during the evaluation.
+- **cpu_exhaustion kind**: the load job drives CPU to 75–85% of the pods' limit, right around the 85% `cpu_saturation` threshold, so the CPU incidents are detected but mostly without that kind. When the evaluation finished (results committed in `efa69b6`) this was 0 of 4. The 1 of 4 shown now is incident `09298360` (extra cpu_exhaustion round 2): a pipeline restart at ~12:53 UTC, after the evaluation, re-scanned the recent window at slightly different sample times and merged an 85.6% sample (12:32:36) into it. Nothing else in these results changed. The threshold was not changed during the evaluation.
 
 ![F1 by scenario](f1_by_scenario.png)
