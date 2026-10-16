@@ -21,6 +21,8 @@ Nothing in this file takes any healing action on its own.
 
 import os
 import json
+import time
+from datetime import datetime, timezone
 
 import chromadb
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -33,6 +35,25 @@ from incident_store import IncidentStore
 from k8s_signals import describe_signal
 
 CHROMA_PATH = str(ML_ENGINE_DIR / "chroma_store")  # same folder whatever the working directory
+USAGE_LOG = ML_ENGINE_DIR / "logs" / "gemini_usage.jsonl"  # one line per successful call; scripts/gemini_usage.py
+
+
+def log_usage(response, incident_id: str, model: str, seconds: float, path=None) -> None:
+    """Appends the call's token counts. Best effort: never lets logging break a diagnosis."""
+    try:
+        usage = getattr(response, "usage_metadata", None) or {}
+        if not usage:  # older langchain-google-genai: only Gemini's own field names
+            raw = (getattr(response, "response_metadata", None) or {}).get("usage_metadata") or {}
+            usage = {"input_tokens": raw.get("prompt_token_count"), "output_tokens": raw.get("candidates_token_count")}
+        record = {"time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "incident_id": incident_id,
+                  "model": model, "input_tokens": usage.get("input_tokens"),
+                  "output_tokens": usage.get("output_tokens"), "seconds": round(seconds, 3)}
+        path = path or USAGE_LOG   # looked up per call, so tests can point it elsewhere
+        path.parent.mkdir(exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        print(f"Warning: couldn't log Gemini usage: {e}")
 COLLECTION_NAME = "past_incidents"
 
 DETECTION_LABELS = {
@@ -198,10 +219,12 @@ class RCAEngine:
         )
 
         try:
+            started = time.perf_counter()
             response = self.llm.invoke([
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=user_prompt),
             ])
+            log_usage(response, incident.incident_id, getattr(self.llm, "model", None), time.perf_counter() - started)
         except Exception as e:
             # quota, network, bad model name... the caller keeps the incident undiagnosed
             return {
