@@ -11,21 +11,38 @@ Explanation layer, and the React dashboard.
 
 Connects to a LOCAL MongoDB instance by default (mongodb://localhost:27017).
 If you're running MongoDB inside Minikube/Kubernetes instead of locally,
-just change MONGO_URI below.
+set MONGO_URI in ml-engine/.env (see config.py).
+
+Times are stored twice: as strings (start_time/end_time, what the dashboard
+and older code read) and as real BSON datetimes (start_dt/end_dt), which is
+what overlap queries and sorting use -- string comparison of timestamps
+breaks as soon as two formats are mixed.
 """
 
-from pymongo import MongoClient
+from pymongo import DESCENDING, MongoClient
 from pymongo.errors import ConnectionFailure
 from datetime import timedelta
 
 import pandas as pd
 
-from correlation_engine import CorrelationEngine, Incident
+from config import MONGO_DB, MONGO_URI
+from correlation_engine import DEFAULT_WORKLOAD, CorrelationEngine, Incident
 
 
-MONGO_URI = "mongodb://localhost:27017"
-DB_NAME = "chaos_healer"
+DB_NAME = MONGO_DB
 COLLECTION_NAME = "incidents"
+
+
+def _as_datetime(value):
+    """String or Timestamp -> naive-UTC python datetime, the form MongoDB stores."""
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.floor("ms").to_pydatetime()  # MongoDB stores milliseconds
+
+
+def _with_datetimes(doc: dict) -> dict:
+    return {**doc, "start_dt": _as_datetime(doc["start_time"]), "end_dt": _as_datetime(doc["end_time"])}
 
 
 class IncidentStore:
@@ -41,6 +58,16 @@ class IncidentStore:
         self.db = self.client[db_name]
         self.collection = self.db[COLLECTION_NAME]
 
+    def backfill_datetimes(self) -> int:
+        """Adds start_dt/end_dt to incidents saved before those fields existed. Returns how many."""
+        fixed = 0
+        for doc in self.collection.find({"start_dt": {"$exists": False}}, {"incident_id": 1, "start_time": 1, "end_time": 1}):
+            dates = _with_datetimes(doc)
+            self.collection.update_one({"_id": doc["_id"]},
+                                       {"$set": {"start_dt": dates["start_dt"], "end_dt": dates["end_dt"]}})
+            fixed += 1
+        return fixed
+
     def is_connected(self) -> bool:
         """Quick check so callers can fail gracefully with a clear message."""
         try:
@@ -55,7 +82,7 @@ class IncidentStore:
         re-running detection on the same window doesn't create
         duplicate records.
         """
-        doc = incident.to_dict()
+        doc = _with_datetimes(incident.to_dict())
         self.collection.update_one(
             {"incident_id": doc["incident_id"]},
             {"$set": doc},
@@ -69,13 +96,40 @@ class IncidentStore:
             self.save_incident(incident)
         return len(incidents)
 
-    def find_overlapping(self, start, end, window: timedelta) -> dict | None:
-        """Most recent stored incident whose time range is within `window` of [start, end]."""
-        lo, hi = pd.Timestamp(start) - window, pd.Timestamp(end) + window
-        for doc in self.collection.find({}, {"_id": 0}).sort("start_time", -1).limit(100):
-            if pd.Timestamp(doc["start_time"]) <= hi and pd.Timestamp(doc["end_time"]) >= lo:
-                return doc
-        return None
+    def find_overlapping(self, start, end, window: timedelta, workload: str | None = None) -> dict | None:
+        """
+        Most recent stored incident whose time range is within `window` of
+        [start, end], compared as real datetimes. With `workload`, only
+        incidents of that workload count (older docs without the field are
+        the flask app's).
+        """
+        lo, hi = _as_datetime(start) - window, _as_datetime(end) + window
+        query = {"start_dt": {"$lte": hi}, "end_dt": {"$gte": lo}}
+        if workload is not None:
+            # None also matches a missing field
+            query["workload"] = {"$in": [workload, None] if workload == DEFAULT_WORKLOAD else [workload]}
+        return self.collection.find_one(query, {"_id": 0}, sort=[("start_dt", DESCENDING)])
+
+    def incident_spans(self, start, end, window: timedelta) -> list[tuple]:
+        """(start, end) of every stored incident, any workload, within `window` of [start, end]."""
+        lo, hi = _as_datetime(start) - window, _as_datetime(end) + window
+        return [
+            (pd.Timestamp(d["start_dt"]), pd.Timestamp(d["end_dt"]))
+            for d in self.collection.find({"start_dt": {"$lte": hi}, "end_dt": {"$gte": lo}},
+                                          {"start_dt": 1, "end_dt": 1})
+        ]
+
+    def _free_id(self, incident_id: str) -> str:
+        """
+        Incident ids are deterministic (workload + start bucket), so two
+        separate incidents in the same bucket would collide; the second
+        gets a -2 suffix, the third -3, and so on.
+        """
+        candidate, n = incident_id, 1
+        while self.collection.count_documents({"incident_id": candidate}, limit=1):
+            n += 1
+            candidate = f"{incident_id}-{n}"
+        return candidate
 
     def save_or_merge(self, incident: Incident, window: timedelta,
                       create: bool = True) -> tuple[dict | None, bool]:
@@ -93,15 +147,17 @@ class IncidentStore:
         written and (None, False) is returned.
         """
         doc = incident.to_dict()
-        existing = self.find_overlapping(incident.start_time, incident.end_time, window)
+        existing = self.find_overlapping(incident.start_time, incident.end_time, window, incident.workload)
         if existing is None and not create:
             return None, False
         if existing is None:
-            self.collection.update_one({"incident_id": doc["incident_id"]}, {"$set": doc}, upsert=True)
+            doc["incident_id"] = self._free_id(doc["incident_id"])
+            doc["stored_at"] = str(pd.Timestamp.now(tz="UTC").tz_localize(None))  # for time-to-detect
+            self.collection.update_one({"incident_id": doc["incident_id"]}, {"$set": _with_datetimes(doc)}, upsert=True)
             return doc, True
 
         merged = _merge_incident_docs(existing, doc)
-        self.collection.update_one({"incident_id": merged["incident_id"]}, {"$set": merged})
+        self.collection.update_one({"incident_id": merged["incident_id"]}, {"$set": _with_datetimes(merged)})
 
         def reasons(d):
             return {(s["kind"], s["reason"]) for s in d.get("k8s_signals", [])}
@@ -132,12 +188,12 @@ class IncidentStore:
 
     def get_recent_incidents(self, limit: int = 20) -> list[dict]:
         """Fetch the most recent incidents, newest first."""
-        cursor = self.collection.find().sort("start_time", -1).limit(limit)
+        cursor = self.collection.find({}, {"start_dt": 0, "end_dt": 0}).sort("start_dt", DESCENDING).limit(limit)
         return list(cursor)
 
     def get_by_severity(self, severity: str) -> list[dict]:
         """e.g. get_by_severity('high') for only the serious ones."""
-        cursor = self.collection.find({"max_severity": severity})
+        cursor = self.collection.find({"max_severity": severity}, {"start_dt": 0, "end_dt": 0})
         return list(cursor)
 
 
@@ -164,6 +220,7 @@ def _merge_incident_docs(old: dict, new: dict) -> dict:
 
     return {
         "incident_id": old["incident_id"],
+        "workload": old.get("workload", new.get("workload", DEFAULT_WORKLOAD)),
         "start_time": min(old["start_time"], new["start_time"], key=pd.Timestamp),
         "end_time": max(old["end_time"], new["end_time"], key=pd.Timestamp),
         "anomaly_count": len(anomalies),

@@ -21,13 +21,12 @@ incidents. Override with the K8S_POD_REGEX / K8S_DEPLOYMENT_REGEX env vars.
 """
 
 import os
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from correlation_engine import CorrelationEngine, Incident
+from correlation_engine import CorrelationEngine, Incident, make_incident_id, workload_from_target
 
 NAMESPACE = os.environ.get("PROM_NAMESPACE", "default")
 K8S_POD_REGEX = os.environ.get("K8S_POD_REGEX", "flask-deployment-.*|chaos-.*")
@@ -209,15 +208,18 @@ def _max_severity(*severities: str) -> str:
 def attach_k8s_signals(incidents: list[Incident], signals: list[K8sSignal],
                        window: timedelta) -> list[Incident]:
     """
-    Attaches each signal to the ML incident it falls within `window` of
-    (modifies those incidents in place), then groups the leftover signals
-    by time proximity into rule-based incidents, which are returned.
+    Attaches each signal to the ML incident of the same workload it falls
+    within `window` of (modifies those incidents in place), then groups the
+    leftover signals by workload and time proximity into rule-based
+    incidents, which are returned.
     """
     matched: dict[str, list[K8sSignal]] = {}
     leftover: list[K8sSignal] = []
     for s in signals:
         match = next(
-            (i for i in incidents if i.start_time - window <= s.timestamp <= i.end_time + window),
+            (i for i in incidents
+             if i.workload == workload_from_target(s.target)
+             and i.start_time - window <= s.timestamp <= i.end_time + window),
             None,
         )
         if match is None:
@@ -233,18 +235,25 @@ def attach_k8s_signals(incidents: list[Incident], signals: list[K8sSignal],
                 incident.max_severity, *(signal_severity(s) for s in incident.k8s_signals)
             )
 
-    groups: list[list[K8sSignal]] = []
+    # one failing workload per incident, so two chaos scenarios that overlap
+    # in time are still reported (and diagnosed) separately
+    groups: list[tuple[str, list[K8sSignal]]] = []
+    open_group: dict[str, list[K8sSignal]] = {}
     for s in leftover:  # already sorted by time
-        if groups and s.timestamp - groups[-1][-1].timestamp <= window:
-            groups[-1].append(s)
+        workload = workload_from_target(s.target)
+        group = open_group.get(workload)
+        if group is not None and s.timestamp - group[-1].timestamp <= window:
+            group.append(s)
         else:
-            groups.append([s])
+            open_group[workload] = [s]
+            groups.append((workload, open_group[workload]))
 
     rule_incidents = []
-    for group in groups:
+    for workload, group in groups:
         summary = summarize_signals(group)
         rule_incidents.append(Incident(
-            incident_id=str(uuid.uuid4())[:8],
+            incident_id=make_incident_id(workload, group[0].timestamp),
+            workload=workload,
             start_time=group[0].timestamp,
             end_time=group[-1].timestamp,
             anomalies=[],

@@ -49,21 +49,21 @@ class FakeClient:
         if q == ks.RESTARTS_QUERY:
             return [
                 # OOM pod: restarts 0 -> 1 -> 2 around 10 min ago
-                _series({"pod": "flask-deployment-a", "container": "flask"},
+                _series({"pod": "flask-deployment-7c9d8f6b5-aaaaa", "container": "flask"},
                         [(t(12), 0), (t(11), 0), (t(10), 1), (t(9), 2), (t(8), 2)]),
                 # restarted 40 min ago (e.g. laptop reboot): flat in window, sticky "Error" must NOT fire
-                _series({"pod": "flask-deployment-b", "container": "flask"},
+                _series({"pod": "flask-deployment-7c9d8f6b5-bbbbb", "container": "flask"},
                         [(t(12), 3), (t(8), 3)]),
             ]
         if q == ks.TERMINATED_REASON_QUERY:
             return [
-                _series({"pod": "flask-deployment-a", "container": "flask", "reason": "OOMKilled"},
+                _series({"pod": "flask-deployment-7c9d8f6b5-aaaaa", "container": "flask", "reason": "OOMKilled"},
                         [(t(10), 1), (t(9), 1)]),
-                _series({"pod": "flask-deployment-b", "container": "flask", "reason": "Error"},
+                _series({"pod": "flask-deployment-7c9d8f6b5-bbbbb", "container": "flask", "reason": "Error"},
                         [(t(12), 1), (t(8), 1)]),
             ]
         if q == ks.WAITING_REASON_QUERY:
-            return [_series({"pod": "chaos-crashloop-x", "container": "busybox", "reason": "CrashLoopBackOff"},
+            return [_series({"pod": "chaos-crashloop-5d8f7b9c4-x2k4p", "container": "busybox", "reason": "CrashLoopBackOff"},
                             [(t(25), 1)])]  # a single sample must still count
         if q == ks.UNAVAILABLE_QUERY:
             return [
@@ -93,7 +93,7 @@ def test_restarts_use_reason_only_for_restarts_in_window():
     _, signals = _fetch()
     restarts = [s for s in signals if s.kind == "restart"]
     assert len(restarts) == 2 and all(s.reason == "OOMKilled" for s in restarts), restarts
-    assert not any(s.target.startswith("flask-deployment-b") for s in signals), "sticky reboot Error leaked"
+    assert not any(s.target.startswith("flask-deployment-7c9d8f6b5-bbbbb") for s in signals), "sticky reboot Error leaked"
 
 
 def test_bad_waiting_reason_counts_immediately():
@@ -150,8 +150,8 @@ def test_merge_instead_of_duplicate():
 
         # Later poll: a new KIND of failure appears -> merged AND re-diagnosed
         t = first.end_time + pd.Timedelta(minutes=1)
-        later = Incident("later001", t, t, [], "medium", 1.0, "rule", [{
-            "kind": "restart", "target": "chaos-crashloop-x/busybox", "reason": "Error",
+        later = Incident("later001", t, t, [], "medium", 1.0, "rule", workload="chaos-crashloop", k8s_signals=[{
+            "kind": "restart", "target": "chaos-crashloop-5d8f7b9c4-x2k4p/busybox", "reason": "Error",
             "first_seen": str(t), "last_seen": str(t), "value": 1,
         }])
         doc3, needs3 = store.save_or_merge(later, WINDOW)

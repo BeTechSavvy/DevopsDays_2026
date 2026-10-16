@@ -1,0 +1,39 @@
+# kube-prometheus-stack values.
+#   helm install monitoring prometheus-community/kube-prometheus-stack -f monitoring-values.yaml
+#
+# Everything stateful/central is pinned to node 1 ("minikube") so the
+# node-pressure chaos scenario, which stresses node 2 ("minikube-m02"),
+# can't evict monitoring. node-exporter stays a DaemonSet on every node --
+# node-level metrics are the point of it.
+
+prometheus:
+  prometheusSpec:
+    nodeSelector:
+      kubernetes.io/hostname: minikube
+    retention: 3d
+    resources:
+      requests:
+        memory: 400Mi
+      limits:
+        memory: 1500Mi
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      kubernetes.io/hostname: minikube
+
+grafana:
+  nodeSelector:
+    kubernetes.io/hostname: minikube
+
+prometheusOperator:
+  nodeSelector:
+    kubernetes.io/hostname: minikube
+  admissionWebhooks:
+    patch:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+
+kube-state-metrics:
+  nodeSelector:
+    kubernetes.io/hostname: minikube

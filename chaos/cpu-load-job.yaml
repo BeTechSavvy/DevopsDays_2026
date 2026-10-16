@@ -2,8 +2,8 @@
 #
 # Scenario (a): CPU exhaustion.
 #
-# A tiny in-cluster load generator that hammers flask-service /spike-load
-# (0.3s busy-loop per request) with WORKERS back-to-back loops for DURATION
+# A tiny in-cluster load generator that hammers flask-service /cpu-heavy
+# (~150 ms of SHA-256 hashing per request) with WORKERS back-to-back loops for DURATION
 # seconds. Going through the Service (not a port-forward) spreads requests
 # across BOTH flask pods, so both sit at their 250m CPU limit and
 # cpu_percent climbs to ~100%. It runs longer than the 2-minute rate()
@@ -36,7 +36,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: TARGET
-          value: "http://flask-service:5000/spike-load"
+          value: "http://flask-service:5000/cpu-heavy"
         - name: DURATION
           value: "180"
         - name: WORKERS

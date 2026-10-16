@@ -1,4 +1,4 @@
-﻿"""
+"""
 prometheus_source.py
 
 Live drop-in replacement for anomaly_detector.generate_mock_metrics().
@@ -15,10 +15,10 @@ file with the same name would shadow it for anything run from this
 directory.
 
 Requires Prometheus to be reachable, e.g.:
-    kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090
+    kubectl port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
 
 Then either use the default (http://localhost:9090) or override via
-the PROM_URL env var if you're reaching it a different way.
+PROMETHEUS_URL in ml-engine/.env (see config.py) if you're reaching it a different way.
 """
 
 import os
@@ -27,7 +27,9 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import requests
 
-PROM_URL = os.environ.get("PROM_URL", "http://localhost:9090")
+from config import PROMETHEUS_URL
+
+PROM_URL = PROMETHEUS_URL
 NAMESPACE = os.environ.get("PROM_NAMESPACE", "default")
 POD_REGEX = os.environ.get("PROM_POD_REGEX", "flask-deployment-.*")
 
@@ -52,10 +54,13 @@ MEMORY_QUERY = (
 
 # flask_http_request_total{status=...} comes from prometheus_flask_exporter
 # in app.py. clamp_min avoids a divide-by-zero (and therefore missing data
-# point) whenever there's a quiet window with no traffic at all.
+# point) whenever there's a quiet window with no traffic at all, and
+# `or vector(0)` gives 0 rather than no data before the first 5xx has ever
+# been counted (the status="500" series doesn't exist until then). Scoped to
+# the same pods as cpu/memory -- other services export the same metric.
 ERROR_RATE_QUERY = (
-    '100 * sum(rate(flask_http_request_total{status=~"5.."}[2m])) '
-    '/ clamp_min(sum(rate(flask_http_request_total[2m])), 1e-9)'
+    f'100 * (sum(rate(flask_http_request_total{{namespace="{NAMESPACE}", pod=~"{POD_REGEX}", status=~"5.."}}[2m])) or vector(0)) '
+    f'/ clamp_min(sum(rate(flask_http_request_total{{namespace="{NAMESPACE}", pod=~"{POD_REGEX}"}}[2m])) or vector(0), 1e-9)'
 )
 
 QUERIES = {
@@ -116,18 +121,24 @@ class PrometheusClient:
         df[column] = pd.to_numeric(df[column], errors="coerce")
         return df
 
-    def get_metrics_dataframe(self, minutes_back: int = 30, step: str = "30s") -> pd.DataFrame:
+    def get_metrics_dataframe(self, minutes_back: int = 30, step: str = "30s",
+                              end_minutes_back: int = 0, queries: dict = None) -> pd.DataFrame:
         """
         Pulls cpu_percent / memory_percent / error_rate over the last
         `minutes_back` minutes and merges them into ONE DataFrame shaped
         exactly like generate_mock_metrics() -- a drop-in replacement
         for everything downstream (AnomalyDetector, CorrelationEngine, etc).
+
+        end_minutes_back > 0 stops the window that many minutes ago, e.g.
+        (60, end_minutes_back=30) is [now-60m, now-30m] -- an earlier window
+        to fit the baseline on, separate from the data being scored.
+        `queries` overrides QUERIES, e.g. for a different workload.
         """
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(minutes=minutes_back)
+        end = datetime.now(timezone.utc) - timedelta(minutes=end_minutes_back)
+        start = end - timedelta(minutes=minutes_back - end_minutes_back)
 
         frames = {}
-        for column, promql in QUERIES.items():
+        for column, promql in (queries or QUERIES).items():
             result = self.query_range(promql, start, end, step=step)
             frame = self._series_to_frame(result, column)
             if frame.empty:
@@ -139,7 +150,7 @@ class PrometheusClient:
         if not non_empty:
             print("All three queries returned empty. Nothing to merge yet -- "
                   "check the warnings above, and confirm Prometheus has enough history/traffic.")
-            return pd.DataFrame(columns=["timestamp", *QUERIES.keys()])
+            return pd.DataFrame(columns=["timestamp", *(queries or QUERIES).keys()])
 
         merged = non_empty[0]
         for frame in non_empty[1:]:
@@ -161,7 +172,7 @@ if __name__ == "__main__":
 
     if not client.is_reachable():
         print(f"Cannot reach Prometheus at {PROM_URL}.")
-        print("Run: kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090")
+        print("Run: kubectl port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090")
         raise SystemExit(1)
 
     df = client.get_metrics_dataframe(minutes_back=15)

@@ -16,10 +16,41 @@ and handed to the next layer (Root Cause Analysis / LLM Explanation).
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+import hashlib
+import re
 import pandas as pd
-import uuid
 
 from anomaly_detector import Anomaly
+
+# The workload the cpu/memory/error-rate metrics describe (prometheus_source.POD_REGEX)
+DEFAULT_WORKLOAD = "flask-deployment"
+ID_BUCKET = timedelta(minutes=5)
+
+# <deployment>-<replicaset hash>-<pod suffix>, or <job>-<pod suffix>
+_DEPLOYMENT_POD = re.compile(r"^(.+)-[a-z0-9]{6,10}-[a-z0-9]{5}$")
+_JOB_POD = re.compile(r"^(.+)-[a-z0-9]{5}$")
+
+
+def workload_from_target(target: str) -> str:
+    """'chaos-oom-7d9f8c6b5-x2k4p/hog' -> 'chaos-oom'; a deployment name is returned as-is."""
+    if "/" not in target:
+        return target  # replicas_unavailable targets are already deployment names
+    name = target.split("/")[0]
+    for pattern in (_DEPLOYMENT_POD, _JOB_POD):
+        m = pattern.match(name)
+        if m:
+            return m.group(1)
+    return name
+
+
+def make_incident_id(workload: str, start_time, bucket: timedelta = ID_BUCKET) -> str:
+    """
+    Deterministic id: the same workload failing in the same 5-minute bucket
+    always gets the same id, so re-running the pipeline over a window is
+    idempotent and ids are reproducible in the evaluation.
+    """
+    floored = pd.Timestamp(start_time).floor(pd.Timedelta(bucket))
+    return hashlib.sha1(f"{workload}|{floored.isoformat()}".encode()).hexdigest()[:8]
 
 
 @dataclass
@@ -37,6 +68,7 @@ class Incident:
     avg_confidence: float = 0.0
     detection: str = "ml"  # "ml" (Isolation Forest), "rule" (k8s_signals only) or "ml+rule"
     k8s_signals: list[dict] = field(default_factory=list)  # summaries from k8s_signals.py
+    workload: str = DEFAULT_WORKLOAD  # deployment/job the incident is about
 
     @classmethod
     def from_dict(cls, doc: dict) -> "Incident":
@@ -59,12 +91,14 @@ class Incident:
             avg_confidence=doc["avg_confidence"],
             detection=doc.get("detection", "ml"),
             k8s_signals=doc.get("k8s_signals", []),
+            workload=doc.get("workload", DEFAULT_WORKLOAD),
         )
 
     def to_dict(self) -> dict:
         """Flat representation, ready to insert into MongoDB."""
         return {
             "incident_id": self.incident_id,
+            "workload": self.workload,
             "start_time": str(self.start_time),
             "end_time": str(self.end_time),
             "anomaly_count": len(self.anomalies),
@@ -96,8 +130,9 @@ class CorrelationEngine:
 
     _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 
-    def __init__(self, time_window: timedelta = timedelta(minutes=3)):
+    def __init__(self, time_window: timedelta = timedelta(minutes=3), workload: str = DEFAULT_WORKLOAD):
         self.time_window = time_window
+        self.workload = workload
 
     def correlate(self, anomalies: list[Anomaly]) -> list[Incident]:
         """
@@ -130,12 +165,13 @@ class CorrelationEngine:
         avg_confidence = sum(a.confidence for a in group) / len(group)
 
         return Incident(
-            incident_id=str(uuid.uuid4())[:8],
+            incident_id=make_incident_id(self.workload, group[0].timestamp),
             start_time=group[0].timestamp,
             end_time=group[-1].timestamp,
             anomalies=group,
             max_severity=max_severity,
             avg_confidence=avg_confidence,
+            workload=self.workload,
         )
 
 

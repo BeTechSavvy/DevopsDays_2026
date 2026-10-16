@@ -20,7 +20,10 @@ minikube start
 
 ### 2. Build Flask Docker Image
 
-docker build -t flask-app .
+The image is named `flask-demo` everywhere (deployment.yaml uses it with
+`imagePullPolicy: Never`), so build it straight into Minikube's image store:
+
+minikube image build -t flask-demo .
 
 
 ### 3. Deploy Flask Application
@@ -31,7 +34,7 @@ kubectl apply -f service.yaml
 
 ### 4. Install Prometheus and Grafana
 
-helm install prometheus prometheus-community/kube-prometheus-stack
+helm install monitoring prometheus-community/kube-prometheus-stack -f monitoring-values.yaml
 
 
 ### 5. Install Loki
@@ -53,7 +56,7 @@ bitnami/kubernetes-event-exporter \
 
 ### 8. Access Grafana
 
-kubectl port-forward svc/prometheus-grafana 3000:80
+kubectl port-forward svc/monitoring-grafana 3000:80
 
 Open:
 

@@ -1,0 +1,51 @@
+# chaos/baseline-traffic.yaml
+#
+# Steady, light /work traffic from INSIDE the cluster (~3 req/s through
+# flask-service, so both flask pods get some), giving the anomaly detector a
+# realistic "normal" to learn: /work fails ~10% of the time by design.
+#
+# Same job as chaos/baseline_traffic.py, but doesn't depend on a
+# port-forward staying up -- a dropped tunnel would leave gaps in the
+# baseline. Pinned to node 1 so the node-pressure scenario on node 2
+# can't evict it.
+#
+#   kubectl apply -f chaos/baseline-traffic.yaml     # start (runs until deleted)
+#   kubectl delete -f chaos/baseline-traffic.yaml    # stop
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: baseline-traffic
+  labels:
+    app: baseline-traffic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: baseline-traffic
+  template:
+    metadata:
+      labels:
+        app: baseline-traffic
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      containers:
+      - name: traffic
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "sending /work traffic to flask-service"
+          while true; do
+            wget -q -O /dev/null -T 5 http://flask-service:5000/work || true
+            sleep 0.3
+          done
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

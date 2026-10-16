@@ -27,7 +27,9 @@ import time
 
 import requests
 
-BASE_URL = os.environ.get("FLASK_URL", "http://127.0.0.1:30001")
+from config import FLASK_URL
+
+BASE_URL = FLASK_URL
 
 BASELINE_SECONDS = int(os.environ.get("BASELINE_SECONDS", 60))
 SPIKE_SECONDS = int(os.environ.get("SPIKE_SECONDS", 60))

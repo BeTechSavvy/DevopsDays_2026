@@ -16,20 +16,28 @@ Every new incident is sent to RCAEngine (Gemini + ChromaDB) and the result is
 attached to its MongoDB document under `diagnosis`. RCA is best-effort: if
 Gemini fails, the incident is kept without a diagnosis.
 
+The detector is fitted on an EARLIER window ([now-60m, now-30m] by default)
+and only scores data after it, so it never judges the points it learned
+"normal" from. In --loop mode it refits every --refit-every cycles, unless
+a stored incident falls inside the baseline window.
+
 Usage:
-    python pipeline.py                 # one-shot pass over the baseline window
+    python pipeline.py                 # one-shot pass over the last 30 minutes
     python pipeline.py --loop          # keeps polling for new anomalies
     python pipeline.py --loop --interval 30
+    python pipeline.py --baseline-start 20 --baseline-end 5   # shorter history, e.g. a fresh cluster
     python pipeline.py --no-rca        # skip Gemini diagnosis (e.g. quota ran out)
 """
 
 import argparse
 import time
+import traceback
 from datetime import timedelta
 
-import requests
+import pandas as pd
 
 from anomaly_detector import AnomalyDetector
+from config import FLASK_URL
 from correlation_engine import CorrelationEngine, Incident
 from incident_store import IncidentStore
 from k8s_signals import attach_k8s_signals, fetch_k8s_signals
@@ -65,6 +73,11 @@ def diagnose_incidents(rca, store, incidents):
             diagnosis = rca.diagnose(incident, persist=False)
         except Exception as e:
             print(f"WARNING: RCA failed for incident {incident.incident_id} ({_short_error(e)}). Saved without diagnosis.")
+            continue
+
+        if "error" in diagnosis:
+            # rca_engine caught a failed Gemini call
+            print(f"WARNING: RCA failed for incident {incident.incident_id} ({diagnosis['error'][:150]}). Saved without diagnosis.")
             continue
 
         if "raw_response" in diagnosis:
@@ -114,6 +127,45 @@ def save_incidents(store, incidents, window):
     return new, merged, skipped, to_diagnose
 
 
+def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_incident=False):
+    """
+    Fits a NEW detector on the earlier window [now-start_minutes, now-end_minutes],
+    so the model never scores the data it was trained on. Returns
+    (detector, None) on success or (None, reason) if it couldn't fit.
+
+    Stored incidents inside the window are not "normal": with
+    skip_if_incident (periodic refits) the refit is skipped and the old
+    model kept; otherwise (startup, where there's no old model) those
+    rows are left out of the fit.
+    """
+    end = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(minutes=end_minutes)
+    start = end - pd.Timedelta(minutes=start_minutes - end_minutes)
+    spans = store.incident_spans(start, end, window)
+    if spans and skip_if_incident:
+        return None, f"{len(spans)} incident(s) inside the baseline window"
+
+    df = client.get_metrics_dataframe(minutes_back=start_minutes, end_minutes_back=end_minutes)
+    missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
+    if missing:
+        return None, (
+            f"baseline is missing {', '.join(missing)} -- Prometheus returned no data for "
+            "that query (see the WARNING above for the exact PromQL)"
+        )
+    for lo, hi in spans:
+        df = df[(df["timestamp"] < lo - window) | (df["timestamp"] > hi + window)]
+    if len(df) < MIN_BASELINE_ROWS:
+        return None, (
+            f"only {len(df)} clean data points in [now-{start_minutes}m, now-{end_minutes}m]"
+            + (f" after leaving out {len(spans)} incident(s)" if spans else "")
+            + f", need at least {MIN_BASELINE_ROWS}"
+        )
+
+    detector = AnomalyDetector(contamination=0.05)
+    detector.fit(df, feature_columns=FEATURE_COLUMNS)
+    note = f" ({len(spans)} incident(s) left out)" if spans else ""
+    return detector, f"fitted on {len(df)} points from [now-{start_minutes}m, now-{end_minutes}m]{note}"
+
+
 def run_once(client, detector, engine, store, minutes_back, since=None, rca=None):
     df = client.get_metrics_dataframe(minutes_back=minutes_back)
     if since is not None:
@@ -153,44 +205,45 @@ def main():
     parser = argparse.ArgumentParser(description="Run the Chaos Healer pipeline against live Prometheus data.")
     parser.add_argument("--loop", action="store_true", help="Keep polling instead of running once")
     parser.add_argument("--interval", type=int, default=60, help="Seconds between polls in --loop mode")
-    parser.add_argument("--baseline-minutes", type=int, default=30, help="History window used to fit 'normal'")
+    parser.add_argument("--baseline-start", type=int, default=60,
+                        help="Baseline window starts this many minutes ago (default 60)")
+    parser.add_argument("--baseline-end", type=int, default=30,
+                        help="Baseline window ends this many minutes ago (default 30); only newer data is scored")
+    parser.add_argument("--refit-every", type=int, default=30,
+                        help="In --loop mode, refit the baseline every N cycles (0 = never)")
     parser.add_argument("--no-rca", action="store_true", help="Skip Gemini RCA diagnosis of new incidents")
     args = parser.parse_args()
+    if not 0 < args.baseline_end < args.baseline_start:
+        parser.error("need 0 < --baseline-end < --baseline-start")
 
     client = PrometheusClient()
     if not client.is_reachable():
-        print("Cannot reach Prometheus.")
-        print("Run: kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090")
+        print(f"Cannot reach Prometheus at {client.base_url}.")
+        print("Run: kubectl port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090")
         raise SystemExit(1)
 
     store = IncidentStore()
     if not store.is_connected():
         print("Cannot reach MongoDB. Is it running?")
         raise SystemExit(1)
+    store.backfill_datetimes()
 
-    print(f"Fitting detector on the last {args.baseline_minutes} minutes as the 'normal' baseline...")
-    baseline_df = client.get_metrics_dataframe(minutes_back=args.baseline_minutes)
-
-    missing = [c for c in FEATURE_COLUMNS if c not in baseline_df.columns]
-    if missing:
-        print(
-            f"Baseline is missing {', '.join(missing)} -- Prometheus returned no data for "
-            "that query (see the WARNING above for the exact PromQL). Can't fit without "
-            f"all of {FEATURE_COLUMNS}."
-        )
-        raise SystemExit(1)
-
-    if len(baseline_df) < MIN_BASELINE_ROWS:
-        print(
-            f"Only {len(baseline_df)} data points available -- need at least {MIN_BASELINE_ROWS} "
-            "to fit a baseline. Let traffic build up longer, or hit /work a bunch of times first, e.g.:\n"
-            "  for i in $(seq 1 100); do curl -s http://localhost:30001/work > /dev/null; sleep 1; done"
-        )
-        raise SystemExit(1)
-
-    detector = AnomalyDetector(contamination=0.05)
-    detector.fit(baseline_df, feature_columns=FEATURE_COLUMNS)
     engine = CorrelationEngine(time_window=timedelta(minutes=3))
+
+    print(f"Fitting detector on [now-{args.baseline_start}m, now-{args.baseline_end}m] as the 'normal' baseline...")
+    detector, message = fit_baseline(client, store, args.baseline_start, args.baseline_end, engine.time_window)
+    if detector is None:
+        print(
+            f"Can't fit a baseline: {message}.\n"
+            "Let normal traffic build up longer (the cluster needs ~"
+            f"{args.baseline_start} min of history), or use a shorter window, e.g. "
+            "--baseline-start 20 --baseline-end 5. To generate traffic:\n"
+            "  kubectl port-forward svc/flask-service 30001:5000      # own terminal\n"
+            "  python chaos/baseline_traffic.py --minutes 25          # from the repo root\n"
+            f"(the traffic scripts use FLASK_URL, currently {FLASK_URL})"
+        )
+        raise SystemExit(1)
+    print(f"Baseline {message}.")
 
     if args.no_rca:
         print("RCA disabled (--no-rca). Incidents will be saved without a diagnosis.")
@@ -198,21 +251,34 @@ def main():
     else:
         rca = create_rca_engine()
 
-    last_seen = run_once(client, detector, engine, store, minutes_back=args.baseline_minutes, rca=rca)
+    # score only what came after the baseline window
+    last_seen = run_once(client, detector, engine, store, minutes_back=args.baseline_end, rca=rca)
 
     if not args.loop:
         return
 
     print(f"Polling every {args.interval}s. Ctrl+C to stop.")
+    cycle = 0
     try:
         while True:
             time.sleep(args.interval)
+            cycle += 1
             minutes_back = max(2, args.interval // 60 + 2)
             try:
+                if args.refit_every and cycle % args.refit_every == 0:
+                    refit, message = fit_baseline(client, store, args.baseline_start, args.baseline_end,
+                                                  engine.time_window, skip_if_incident=True)
+                    if refit is None:
+                        print(f"Refit skipped, keeping the current baseline: {message}.")
+                    else:
+                        detector = refit
+                        print(f"Baseline refitted: {message}.")
                 last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back, since=last_seen, rca=rca)
-            except (requests.RequestException, RuntimeError, KeyError) as e:
-                # last_seen is left unchanged, so the next poll re-covers this window
-                print(f"Poll failed ({_short_error(e)}). Retrying in {args.interval}s.")
+            except Exception:
+                # Any failure in one cycle (Prometheus, Mongo, a bug) must not stop the loop.
+                # last_seen is left unchanged, so the next poll re-covers this window.
+                print(f"Poll failed. Retrying in {args.interval}s. Traceback:")
+                traceback.print_exc()
     except KeyboardInterrupt:
         print("\nStopped.")
 
