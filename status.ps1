@@ -29,6 +29,7 @@ $endpoints = [ordered]@{
     "Flask      :30001" = "http://localhost:30001/"
     "Loki       :3100" = "http://localhost:3100/ready"
     "Grafana    :3000" = "http://localhost:3000/api/health"
+    "Promtail   :3101" = "http://127.0.0.1:3101/ready"
     "API        :5050" = "http://127.0.0.1:5050/api/health"
     "Dashboard  :5173" = "http://localhost:5173/"
 }

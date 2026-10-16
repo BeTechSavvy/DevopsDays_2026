@@ -111,7 +111,8 @@ function Get-SystemProcesses([string]$Venv, $All = (Get-AllProcesses)) {
         dashboard    = @($All | Where-Object { $_.Name -eq "node.exe" -and (& $norm $_.CommandLine).Contains("$root\dashboard") })
         portforwards = @($All | Where-Object {
                 ($_.Name -eq "powershell.exe" -and (& $norm $_.CommandLine) -match 'port-forwards\.ps1') -or
-                ($_.Name -eq "kubectl.exe" -and $_.CommandLine -match 'port-forward' -and $_.CommandLine -match "svc/($PortForwardServices)")
+                ($_.Name -eq "kubectl.exe" -and $_.CommandLine -match 'port-forward' -and
+                 ($_.CommandLine -match "svc/($PortForwardServices)" -or $_.CommandLine -match 'pod/promtail-'))
             })
         traffic      = @($All | Where-Object { $_.Name -eq "kubectl.exe" -and $_.CommandLine -match '\blogs\b' -and $_.CommandLine -match 'baseline-traffic' })
     }
