@@ -4,6 +4,23 @@ Windows 11 + PowerShell, Docker Desktop, Minikube (Docker driver, 2 nodes).
 Every command is run from the repository root (`Final_year_project\`) unless a
 step says otherwise. Times in the scripts and the dashboard are **UTC**.
 
+## Quick start (machine already set up)
+
+Once steps 0–4 below have been done once, everything else is three commands
+(from any directory; Windows Terminal opens one window with a tab per service):
+
+```powershell
+.\start-all.ps1            # Docker, minikube, port-forwards, traffic, pipeline (with RCA), API, dashboard
+.\status.ps1               # one screen: nodes, failing pods, endpoints, processes, history
+.\stop-all.ps1             # stop all of it; -StopCluster also stops minikube
+```
+
+`start-all.ps1` options: `-NoRca` (no Gemini calls), `-BaselineStart 15
+-BaselineEnd 3` (fresh cluster with little history — it warns when that's
+needed), `-SetupNodePressure` (re-applies step 6 after a minikube restart),
+`-Venv <path>` (default `C:\venvs\rca-venv2`). If PowerShell refuses to run
+scripts, use `powershell -ExecutionPolicy Bypass -File .\start-all.ps1`.
+
 ---
 
 ## 0. Install once

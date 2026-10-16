@@ -1,5 +1,16 @@
 # DEMO SCRIPT — 10 minutes
 
+## Quick start
+
+```powershell
+.\start-all.ps1            # brings everything up and opens the dashboard
+.\status.ps1               # all green? (endpoints, processes, ≥ 40 min history)
+.\stop-all.ps1             # afterwards
+```
+
+Run `.\start-all.ps1 -SetupNodePressure` instead if you'll show node pressure
+after a minikube restart. See RUNBOOK.md for first-time setup.
+
 **Before the audience arrives (≥ 40 min ahead):** follow RUNBOOK.md steps 2–7 so
 the cluster, port-forwards, baseline traffic, `pipeline.py --loop`, `api.py` and
 the dashboard are all running, and the pipeline has printed `Polling every 60s`.

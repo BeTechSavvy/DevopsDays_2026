@@ -34,7 +34,9 @@ try {
 } finally {
     $jobs | Stop-Job
     $jobs | Remove-Job -Force
-    Get-Process kubectl -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "port-forward" } | Stop-Process -Force
+    # Get-Process has no CommandLine in Windows PowerShell 5.1 -- use CIM
+    Get-CimInstance Win32_Process -Filter "Name='kubectl.exe'" |
+        Where-Object { $_.CommandLine -match "port-forward" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Write-Host "Port-forwards stopped."
 }
