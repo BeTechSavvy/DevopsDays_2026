@@ -61,16 +61,27 @@ function Get-MongoEndpoint {
 }
 
 function Get-PrometheusHistoryMinutes {
-    # How far back the Flask app's metrics go (capped at 3 h), or $null if
-    # Prometheus isn't reachable. The pipeline's baseline needs this history.
-    $q = 'time() - min_over_time(timestamp(sum(flask_http_request_total{namespace="default"}))[3h:1m])'
+    # Minutes of UNBROKEN Flask metrics up to now (capped at 3 h), or $null if
+    # Prometheus isn't reachable. Walks back from now and stops at the first gap
+    # longer than 2 minutes -- e.g. the laptop being off overnight -- because the
+    # pipeline's baseline window needs recent data, not just old data.
+    $q = 'sum(flask_http_request_total{namespace="default"})'
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     try {
-        $r = Invoke-RestMethod -Uri "http://localhost:9090/api/v1/query" -Body @{ query = $q } -TimeoutSec 5
+        $r = Invoke-RestMethod -Uri "http://localhost:9090/api/v1/query_range" -TimeoutSec 10 -Body @{
+            query = $q; start = $now - 3 * 3600; end = $now; step = 60 }
     } catch {
         return $null
     }
     if ($r.data.result.Count -eq 0) { return 0 }
-    return [math]::Round([double]$r.data.result[0].value[1] / 60)
+    $times = @($r.data.result[0].values | ForEach-Object { [double]$_[0] })
+    if ($times.Count -eq 0 -or $now - $times[-1] -gt 120) { return 0 }   # nothing recent
+    $earliest = $times[-1]
+    for ($i = $times.Count - 2; $i -ge 0; $i--) {
+        if ($times[$i + 1] - $times[$i] -gt 120) { break }
+        $earliest = $times[$i]
+    }
+    return [math]::Round(($now - $earliest) / 60)
 }
 
 function Get-AllProcesses {
