@@ -62,6 +62,7 @@ from prometheus_source import PrometheusClient, queries_for
 
 FEATURE_COLUMNS = ["cpu_percent", "memory_percent", "error_rate"]
 MIN_BASELINE_ROWS = 20
+BASELINE_STEP = "30s"  # prometheus_source's default sample step
 CYCLE_LOG = Path(__file__).resolve().parent / "logs" / "cycle_times.jsonl"
 WINDOW = timedelta(minutes=3)
 # Apps whose cpu/memory/error rate are scored, each against its own baseline
@@ -243,8 +244,11 @@ def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_open
             f"baseline is missing {', '.join(missing)} -- Prometheus returned no data for "
             "that query (see the WARNING above for the exact PromQL)"
         )
+    # drop each incident's own span +/- one sample -- not +/- the whole correlation
+    # window, which made two short blips eat ~12 of 30 minutes and blocked refits
+    margin = pd.Timedelta(BASELINE_STEP)
     for lo, hi in spans:
-        df = df[(df["timestamp"] < lo - window) | (df["timestamp"] > hi + window)]
+        df = df[(df["timestamp"] < lo - margin) | (df["timestamp"] > hi + margin)]
     if len(df) < MIN_BASELINE_ROWS:
         return None, (
             f"only {len(df)} clean data points in [now-{start_minutes}m, now-{end_minutes}m]"

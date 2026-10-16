@@ -233,6 +233,11 @@ def write_markdown(result: dict) -> None:
     rca = result["rca_overall"]
     lines += ["", f"RCA accuracy overall: {_fmt(rca['accuracy'], pct=True)} of {rca['graded']} graded "
                   f"({rca['ungraded']} still ungraded in `eval/rca_labels.csv`)."]
+    if rca.get("backfilled"):
+        lines += ["", f"{rca['backfilled']} of the diagnoses were made after the run by `eval/rca_backfill.py` "
+                      "(live RCA was off: Gemini free-tier quota), one call per detected injection — so for "
+                      "those incidents Gemini calls per incident is 1 by construction, not a measurement of "
+                      "the pipeline's re-diagnosis policy."]
 
     with_lead = {s: e["prediction_lead_seconds"] for s, e in ex.items() if e["prediction_lead_seconds"]["n"]}
     lines += ["", "## Failure prediction lead time", "",
@@ -322,7 +327,9 @@ def main():
         "n_injections": len(injections), "n_incidents": len(incidents),
         "scores": scores, "extras": extras,
         "rca_overall": {"graded": len(graded), "ungraded": len(detected_ids) - len(graded),
-                        "accuracy": sum(graded) / len(graded) if graded else None},
+                        "accuracy": sum(graded) / len(graded) if graded else None,
+                        "backfilled": sum(bool(m.first["diagnosis"].get("backfilled"))
+                                          for m in matches if m.detected and m.first.get("diagnosis"))},
         # every logged cycle, not just this period: a --no-rca run has no Gemini cycles of its own
         "cycle_times": cycle_times(None),
         "matches": [{"scenario": m.injection.scenario, "start": str(m.injection.start),
