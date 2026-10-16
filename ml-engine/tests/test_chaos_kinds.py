@@ -67,7 +67,7 @@ OBSERVED = {
 def test_scoping_regex_matches_chaos_names():
     pod_re = re.compile(f"^(?:{ks.K8S_POD_REGEX})$")  # PromQL =~ is fully anchored
     dep_re = re.compile(f"^(?:{ks.K8S_DEPLOYMENT_REGEX})$")
-    for module in ("oom_killed", "crashloop", "failed_rollout"):
+    for module in ("oom_killed", "crashloop", "failed_rollout", "node_pressure"):
         deployment = _scenario(module).DEPLOYMENT
         assert dep_re.match(deployment), deployment
         assert pod_re.match(f"{deployment}-5f7d8c9b4-q2w3e"), deployment
@@ -85,6 +85,31 @@ def test_rule_scenarios_produce_their_expected_kind():
         doc = incident.to_dict()
         assert module.EXPECTED_KIND in incident_kinds(doc), (name, incident_kinds(doc))
         assert primary_kind(doc) == module.EXPECTED_KIND, (name, primary_kind(doc))
+
+
+def test_node_pressure_produces_node_pressure_for_both_targets():
+    module = _scenario("node_pressure")
+    signals = [
+        _sig("node_pressure", module.NODE, "MemoryPressure", 0.5),
+        _sig("evicted", "chaos-node-stress-6d5f8b7c9-k2j3h/pod", "Evicted", 1),
+        _sig("unschedulable", "chaos-node-stress-6d5f8b7c9-m4n5b/pod", "FailedScheduling", 1.5),
+    ]
+    incidents = ks.attach_k8s_signals([], signals, WINDOW)
+    assert {i.workload for i in incidents} == set(module.TARGET.split("|"))
+    for incident in incidents:  # each incident on its own already says node pressure
+        assert module.EXPECTED_KIND in incident_kinds(incident.to_dict()), incident.workload
+
+
+def test_db_failure_needs_errors_and_db_log_lines():
+    module = _scenario("db_failure")
+    anomalies = [Anomaly(T0 + pd.Timedelta(seconds=30 * i),
+                         {"cpu_percent": 3.0, "memory_percent": 20.0, "error_rate": 100.0}, -0.2, 0.8, "high")
+                 for i in range(4)]
+    doc = CorrelationEngine(WINDOW, workload=module.TARGET).correlate(anomalies)[0].to_dict()
+    assert primary_kind(doc) == "error_spike"  # errors alone: could be anything
+    doc["evidence"] = {"logs": ["2026-10-16 10:00:01,123 ERROR database error: cannot reach redis at "
+                                "demo-redis:6379: Error 111 connecting to demo-redis:6379. Connection refused."]}
+    assert primary_kind(doc) == module.EXPECTED_KIND
 
 
 def test_cpu_scenario_produces_cpu_saturation():

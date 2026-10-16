@@ -161,7 +161,10 @@ def per_scenario_extras(matches, grades) -> dict:
     for s in {m.injection.scenario for m in matches}:
         ms = [m for m in matches if m.injection.scenario == s]
         detected = [m for m in ms if m.detected]
-        kind_ok = [m.injection.expected_kind in incident_kinds(m.first) for m in detected]
+        # across every incident matched to the injection: node pressure, for one,
+        # shows up as a node incident AND an incident for the evicted workload
+        kind_ok = [m.injection.expected_kind in set().union(*(incident_kinds(d) for d in m.incidents))
+                   for m in detected]
         graded = [grades.get(m.first["incident_id"]) for m in detected]
         graded = [g for g in graded if g is not None]
         mttd = [m.mttd_seconds() for m in detected if m.mttd_seconds() is not None]
@@ -246,6 +249,7 @@ def write_markdown(result: dict) -> None:
 
     ct = result["cycle_times"]
     lines += ["", "## Pipeline cycle time (seconds)", "",
+              "All cycles in `ml-engine/logs/cycle_times.jsonl` (every pipeline run logged on this machine).", "",
               "| Cycles | n | mean | median | p95 | max |", "|---|---:|---:|---:|---:|---:|"]
     for label, key in (("without Gemini calls", "without_llm"), ("with Gemini calls", "with_llm"),
                        ("with Gemini calls, minus Gemini time", "with_llm_minus_llm_time")):
@@ -319,7 +323,8 @@ def main():
         "scores": scores, "extras": extras,
         "rca_overall": {"graded": len(graded), "ungraded": len(detected_ids) - len(graded),
                         "accuracy": sum(graded) / len(graded) if graded else None},
-        "cycle_times": cycle_times(period_start),
+        # every logged cycle, not just this period: a --no-rca run has no Gemini cycles of its own
+        "cycle_times": cycle_times(None),
         "matches": [{"scenario": m.injection.scenario, "start": str(m.injection.start),
                      "incident_ids": [d["incident_id"] for d in m.incidents],
                      "mttd_seconds": m.mttd_seconds()} for m in matches],

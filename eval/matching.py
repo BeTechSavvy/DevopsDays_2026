@@ -75,7 +75,8 @@ def incident_workload(doc: dict) -> str:
 
 
 def overlaps(doc: dict, inj: Injection, grace: timedelta = GRACE) -> bool:
-    return (incident_workload(doc) == inj.target
+    # a target may name alternatives, e.g. "minikube-m02|chaos-node-stress" for node pressure
+    return (incident_workload(doc) in inj.target.split("|")
             and ts(doc["start_time"]) <= inj.end + grace
             and ts(doc["end_time"]) >= inj.start)
 
@@ -119,7 +120,8 @@ def score(matches: list[Match], false_positives: list[dict], separate=("error_sp
     scenarios = sorted({m.injection.scenario for m in matches})
     target_of = {}
     for m in matches:
-        target_of.setdefault(m.injection.target, m.injection.scenario)
+        for target in m.injection.target.split("|"):
+            target_of.setdefault(target, m.injection.scenario)
     fp_by_scenario: dict[str, int] = {}
     for doc in false_positives:
         owner = target_of.get(incident_workload(doc), "other")

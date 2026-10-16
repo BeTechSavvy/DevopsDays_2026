@@ -1,0 +1,121 @@
+# demo-db/demo-db.yaml
+#
+# The DB-connectivity demo: an "orders" service (demo-db-app) backed by
+# Redis (demo-redis) -- two Deployments, two Services, and a ServiceMonitor
+# so Prometheus scrapes the app's /metrics like flask-service's.
+#
+#   minikube image build -t demo-db-app demo-db/ --all
+#   kubectl apply -f demo-db/demo-db.yaml
+#
+# chaos/db_failure.py scales demo-redis to 0 and back. Both are pinned to
+# node 1 so the node-pressure scenario on node 2 stays a separate failure.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-redis
+  labels:
+    app: demo-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-redis
+  template:
+    metadata:
+      labels:
+        app: demo-redis
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-redis
+spec:
+  selector:
+    app: demo-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-db-app
+  labels:
+    app: demo-db-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-db-app
+  template:
+    metadata:
+      labels:
+        app: demo-db-app
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      containers:
+      - name: orders
+        image: demo-db-app
+        imagePullPolicy: Never
+        env:
+        - name: REDIS_HOST
+          value: demo-redis
+        ports:
+        - name: http
+          containerPort: 5000
+        # limits make cpu_percent / memory_percent meaningful, as for flask-deployment
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-db-service
+  labels:
+    app: demo-db-app
+spec:
+  selector:
+    app: demo-db-app
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+---
+# release label must match the kube-prometheus-stack Helm release (see servicemonitor.yaml)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-db-service-monitor
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: demo-db-app
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

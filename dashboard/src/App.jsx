@@ -16,7 +16,11 @@ const DETECTION_LABELS = {
 }
 
 // Same reasons ml-engine/k8s_signals.py treats as high severity
-const HIGH_SEVERITY_REASONS = ['OOMKilled', 'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError']
+const HIGH_SEVERITY_REASONS = [
+  'OOMKilled', 'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError',
+  'MemoryPressure', 'DiskPressure', 'PIDPressure', 'Evicted',
+]
+const PREDICTED = 'predicted_exhaustion'
 
 const shortTime = (t) => t?.split('.')[0] || t
 
@@ -30,7 +34,70 @@ function describeSignal(s) {
   if (s.kind === 'waiting') {
     return `Container ${s.target} stuck waiting in ${s.reason}, ${window}`
   }
+  if (s.kind === PREDICTED) {
+    const resource = s.reason.startsWith('Memory') ? 'Memory' : 'CPU'
+    return `${resource} of ${s.target.split('/')[0]} trending to 100% of its limit in ~${Math.round(s.value)}s, ${window}`
+  }
+  if (s.kind === 'node_pressure') {
+    return `Node ${s.target} reported ${s.reason}, ${window}`
+  }
+  if (s.kind === 'evicted') {
+    return `Pod ${s.target.split('/')[0]} was evicted by the kubelet, ${window}`
+  }
+  if (s.kind === 'unschedulable') {
+    return `Pod ${s.target.split('/')[0]} could not be scheduled (${s.reason}), ${window}`
+  }
   return `Deployment ${s.target} had up to ${Math.round(s.value)} unavailable replica(s), ${window}`
+}
+
+function EarlyWarnings({ signals }) {
+  const warnings = signals.filter((s) => s.kind === PREDICTED)
+  if (warnings.length === 0) return null
+  return (
+    <div className="detail-section warning">
+      <span className="detail-label">Early warning · predicted exhaustion</span>
+      {warnings.map((w, i) => (
+        <p key={i} className="detail-value">
+          <strong>~{Math.round(w.time_to_breach ?? w.value)}s</strong> to breach:{' '}
+          {describeSignal(w)}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function Evidence({ evidence }) {
+  if (!evidence || (!evidence.logs?.length && !evidence.events?.length)) return null
+  return (
+    <div className="detail-section">
+      <span className="detail-label">Evidence</span>
+      {evidence.events?.length > 0 && (
+        <div className="evidence-block">
+          <span className="evidence-title">Kubernetes events</span>
+          {evidence.events.map((e, i) => <p key={i} className="detail-value mono evidence-line">{e}</p>)}
+        </div>
+      )}
+      {evidence.logs?.length > 0 && (
+        <div className="evidence-block">
+          <span className="evidence-title">Error log lines (Loki)</span>
+          {evidence.logs.map((l, i) => <p key={i} className="detail-value mono evidence-line">{l}</p>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Counterfactual({ cf }) {
+  if (!cf) return null
+  return (
+    <div className="detail-section counterfactual">
+      <span className="detail-label">What would have prevented this</span>
+      <p className="detail-value">{cf.what_if}</p>
+      <ul className="cf-actions">
+        {cf.actions.map((a, i) => <li key={i} className="detail-value mono">{a}</li>)}
+      </ul>
+    </div>
+  )
 }
 
 function ConfidenceMeter({ value, color }) {
@@ -69,6 +136,8 @@ function IncidentRow({ incident, isSelected, onClick }) {
         </span>
       </div>
       <div className="incident-row-meta">
+        <span className="mono">{incident.workload || 'flask-deployment'}</span>
+        <span className="dot">·</span>
         <span>{incident.start_time?.split('.')[0] || incident.start_time}</span>
         <span className="dot">·</span>
         <span>{incident.anomaly_count} anomal{incident.anomaly_count === 1 ? 'y' : 'ies'}</span>
@@ -116,9 +185,13 @@ function DetailPanel({ incident }) {
       )}
 
       <div className="detail-section">
-        <span className="detail-label">Window</span>
-        <p className="detail-value mono">{incident.start_time} &rarr; {incident.end_time}</p>
+        <span className="detail-label">Workload · window</span>
+        <p className="detail-value mono">
+          {incident.workload || 'flask-deployment'} · {incident.start_time} &rarr; {incident.end_time}
+        </p>
       </div>
+
+      <EarlyWarnings signals={signals} />
 
       {signals.length > 0 && (
         <div className="detail-section">
@@ -166,6 +239,9 @@ function DetailPanel({ incident }) {
           <p className="detail-value muted">No diagnosis attached to this incident yet.</p>
         </div>
       )}
+
+      <Counterfactual cf={diagnosis?.counterfactual || incident.counterfactual} />
+      <Evidence evidence={incident.evidence} />
 
       <div className="detail-section">
         <span className="detail-label">Raw anomalies ({incident.anomaly_count})</span>

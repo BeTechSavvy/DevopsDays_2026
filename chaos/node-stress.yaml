@@ -1,0 +1,59 @@
+# chaos/node-stress.yaml
+#
+# Scenario (e): node memory pressure.
+#
+# A BestEffort pod (no requests/limits) pinned to node 2 (minikube-m02) that
+# takes ~1.6 GiB of memory in 64 MiB steps and holds it. Node 2's kubelet
+# then reports MemoryPressure, taints the node, and evicts the pod -- it is
+# the BestEffort pod using the most memory, so it goes before anything with
+# requests. The Deployment recreates it, and the new pod can't be scheduled
+# while node 2 is tainted (Pending / FailedScheduling).
+#
+# Needs node 2's kubelet to evict on memory at all -- minikube's default
+# config has no memory.available threshold. chaos/node_pressure.py checks
+# this first; see RUNBOOK.md ("Node pressure setup").
+#
+# Monitoring is pinned to node 1, so it is never the victim.
+#
+# Normally driven by chaos/node_pressure.py, which also cleans it up.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-node-stress
+  labels:
+    chaos: node-pressure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-node-stress
+  template:
+    metadata:
+      labels:
+        app: chaos-node-stress
+        chaos: node-pressure
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: minikube-m02
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: stress
+        image: flask-demo           # just for Python; already on both nodes
+        imagePullPolicy: Never
+        env:
+        - name: TARGET_MIB
+          value: "1600"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, time
+          target, step, held = int(os.environ["TARGET_MIB"]), 64, []
+          while len(held) * step < target:
+              held.append(bytearray(b"\x01") * (step * 1024 * 1024))  # non-zero: really resident
+              print(f"holding {len(held) * step} MiB", flush=True)
+              time.sleep(2)
+          print("target reached, holding", flush=True)
+          while True:
+              time.sleep(60)
+        # deliberately no resources: BestEffort, first in line for eviction

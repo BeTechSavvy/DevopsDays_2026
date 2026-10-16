@@ -49,3 +49,22 @@ spec:
           limits:
             cpu: "50m"
             memory: "32Mi"
+      # same for the orders service (demo-db/), ~2 req/s; harmless if it isn't deployed
+      - name: orders-traffic
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "sending /orders traffic to demo-db-service"
+          while true; do
+            wget -q -O /dev/null -T 5 http://demo-db-service:5000/orders 2>/dev/null || true
+            sleep 0.5
+          done
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "50m"
+            memory: "32Mi"

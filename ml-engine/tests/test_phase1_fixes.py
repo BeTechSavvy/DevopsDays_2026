@@ -124,7 +124,7 @@ class FakeMetricsClient:
     def __init__(self):
         self.calls = []
 
-    def get_metrics_dataframe(self, minutes_back=30, step="30s", end_minutes_back=0, queries=None):
+    def get_metrics_dataframe(self, minutes_back=30, step="30s", end_minutes_back=0, queries=None, quiet=False):
         self.calls.append((minutes_back, end_minutes_back))
         now = pd.Timestamp.now(tz="UTC").tz_localize(None)
         ts = pd.date_range(now - pd.Timedelta(minutes=minutes_back), now - pd.Timedelta(minutes=end_minutes_back), freq="30s")
@@ -144,16 +144,22 @@ def test_baseline_fits_on_earlier_window_and_refit_skips_incidents():
         assert detector is not None and detector.is_fitted, msg
         assert client.calls == [(60, 30)]  # only the earlier window was fetched
 
-        # an incident 45 minutes ago sits inside [now-60m, now-30m]
-        t = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(minutes=45)
-        store.save_or_merge(_rule_incident("chaos-oom", t, minutes=2), WINDOW)
+        now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+        # a CLOSED flask incident 45 minutes ago, inside [now-60m, now-30m]: its rows are left out
+        store.save_or_merge(_rule_incident("flask-deployment", now - pd.Timedelta(minutes=45), minutes=2), WINDOW)
+        refit, msg = pipeline.fit_baseline(client, store, 60, 30, WINDOW, skip_if_open=True,
+                                           workload="flask-deployment")
+        assert refit is not None and "left out" in msg, msg
 
-        refit, msg = pipeline.fit_baseline(client, store, 60, 30, WINDOW, skip_if_incident=True)
-        assert refit is None and "incident" in msg
+        # another workload's incident doesn't touch flask's baseline
+        refit, msg = pipeline.fit_baseline(client, store, 60, 30, WINDOW, skip_if_open=True, workload="demo-db-app")
+        assert refit is not None and "left out" not in msg, msg
 
-        # at startup the incident's rows are left out instead
-        detector, msg = pipeline.fit_baseline(client, store, 60, 30, WINDOW)
-        assert detector is not None and "left out" in msg, msg
+        # an OPEN flask incident (started 40 min ago, still being extended now) -> skip the refit
+        store.save_or_merge(_rule_incident("flask-deployment", now - pd.Timedelta(minutes=40), minutes=40), WINDOW)
+        refit, msg = pipeline.fit_baseline(client, store, 60, 30, WINDOW, skip_if_open=True,
+                                           workload="flask-deployment")
+        assert refit is None and "open incident" in msg, msg
     finally:
         store.client.drop_database(TEST_DB)
 

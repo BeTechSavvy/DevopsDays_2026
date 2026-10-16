@@ -6,7 +6,10 @@ them, several rounds over -- the experiment eval/evaluate.py scores. Each
 scenario script cleans up and appends its own line to chaos/injections.jsonl.
 
 Keep `python pipeline.py --loop` (from ml-engine/) running the whole time,
-with baseline traffic on (chaos/baseline-traffic.yaml). The gap must be
+with baseline traffic on (chaos/baseline-traffic.yaml) and port-forwards.ps1
+running (error_spike goes through the Flask port-forward). node_pressure
+needs chaos/setup-node-pressure.ps1 and db_failure needs demo-db/ deployed;
+see RUNBOOK.md. The gap must be
 longer than the correlation window plus a couple of polls, so one
 scenario's tail can't merge into the next one's incident.
 
@@ -34,13 +37,17 @@ SCENARIOS = {
     "oom_killed": "oom_killed.py",
     "crashloop": "crashloop.py",
     "failed_rollout": "failed_rollout.py",
+    "node_pressure": "node_pressure.py",
+    "db_failure": "db_failure.py",
+    # validation row: /spike-errors through the Flask port-forward (:30001)
+    "error_spike": "../ml-engine/traffic_generator.py",
 }
 # scenarios that take --minutes (cpu_exhaustion's length is fixed by its Job)
-TAKES_MINUTES = {"oom_killed", "crashloop", "failed_rollout"}
+TAKES_MINUTES = {"oom_killed", "crashloop", "failed_rollout", "node_pressure", "db_failure"}
 
 
 def run_scenario(name: str, minutes: float | None) -> int:
-    cmd = [sys.executable, str(CHAOS_DIR / SCENARIOS[name])]
+    cmd = [sys.executable, str((CHAOS_DIR / SCENARIOS[name]).resolve())]
     if minutes is not None and name in TAKES_MINUTES:
         cmd += ["--minutes", str(minutes)]
     proc = subprocess.Popen(cmd)

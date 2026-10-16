@@ -84,6 +84,18 @@ class FakeClient:
                     _series({"pod": "flask-deployment-7c9d8f6b5-bbbbb"}, [(t(12), t(45))])]
         if q == ks.TERMINATED_NOW_QUERY:
             return []
+        if q == ks.NODE_PRESSURE_QUERY:
+            return [_series({"node": "minikube-m02", "condition": "MemoryPressure"}, [(t(20), 1), (t(19.5), 1)])]
+        if q == ks.EVICTED_QUERY:
+            return [_series({"pod": "chaos-node-stress-6d5f8b7c9-k2j3h"}, [(t(19.5), 1)])]
+        if q == ks.UNSCHEDULABLE_QUERY:
+            return [_series({"pod": "chaos-node-stress-6d5f8b7c9-m4n5b"}, [(t(19), 1)])]
+        if q == ks.PENDING_QUERY:
+            return [
+                # pending 4 samples in a row -> counts; a 2-sample normal start -> ignored
+                _series({"pod": "chaos-node-stress-6d5f8b7c9-m4n5b"}, [(t(19), 1), (t(18.5), 1), (t(18), 1), (t(17.5), 1)]),
+                _series({"pod": "flask-deployment-7c9d8f6b5-ccccc"}, [(t(3), 1), (t(2.5), 1)]),
+            ]
         raise AssertionError(f"unexpected query: {q}")
 
 
@@ -148,6 +160,22 @@ def test_unavailable_replicas_need_min_consecutive_samples():
     assert len(early) == 1 and early[0].timestamp == pd.Timestamp(client.t(29.5), unit="s"), early
 
 
+def test_node_pressure_eviction_and_scheduling_signals():
+    _, signals = _fetch()
+    by_kind = {}
+    for s in signals:
+        by_kind.setdefault(s.kind, []).append(s)
+    assert {s.target for s in by_kind["node_pressure"]} == {"minikube-m02"}
+    assert [s.reason for s in by_kind["evicted"]] == ["Evicted"]
+    assert [s.reason for s in by_kind["unschedulable"]] == ["FailedScheduling"]
+    assert len(by_kind["pending"]) == 4  # the short normal start is ignored
+
+    rule = ks.attach_k8s_signals([], [s for s in signals if s.kind in ("node_pressure", "evicted", "unschedulable", "pending")], WINDOW)
+    workloads = {r.workload: r for r in rule}
+    assert set(workloads) == {"minikube-m02", "chaos-node-stress"}
+    assert all(r.max_severity == "high" for r in rule)
+
+
 def test_attach_to_ml_incident_and_raise_rule_incidents():
     client, signals = _fetch()
     ts = pd.Timestamp(client.t(9.5), unit="s")
@@ -156,7 +184,8 @@ def test_attach_to_ml_incident_and_raise_rule_incidents():
         [Anomaly(ts, {"cpu_percent": 20, "memory_percent": 97, "error_rate": 0}, -0.2, 0.8, "medium")],
         "medium", 0.8,
     )
-    rule = ks.attach_k8s_signals([ml], signals, WINDOW)
+    classic = [s for s in signals if s.kind in ("restart", "waiting", "replicas_unavailable")]
+    rule = ks.attach_k8s_signals([ml], classic, WINDOW)
 
     assert ml.detection == "ml+rule" and ml.max_severity == "high"
     assert len(ml.k8s_signals) == 1 and ml.k8s_signals[0]["value"] == 2  # 2 OOM restarts

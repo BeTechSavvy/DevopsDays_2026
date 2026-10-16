@@ -29,11 +29,12 @@ import pandas as pd
 from correlation_engine import CorrelationEngine, Incident, make_incident_id, workload_from_target
 
 NAMESPACE = os.environ.get("PROM_NAMESPACE", "default")
-K8S_POD_REGEX = os.environ.get("K8S_POD_REGEX", "flask-deployment-.*|chaos-.*")
-K8S_DEPLOYMENT_REGEX = os.environ.get("K8S_DEPLOYMENT_REGEX", "flask-deployment|chaos-.*")
+K8S_POD_REGEX = os.environ.get("K8S_POD_REGEX", "flask-deployment-.*|chaos-.*|demo-.*")
+K8S_DEPLOYMENT_REGEX = os.environ.get("K8S_DEPLOYMENT_REGEX", "flask-deployment|chaos-.*|demo-.*")
 
 BAD_WAITING_REASONS = ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"]
-HIGH_SEVERITY_REASONS = {"OOMKilled", *BAD_WAITING_REASONS}
+NODE_CONDITIONS = ["MemoryPressure", "DiskPressure", "PIDPressure"]
+HIGH_SEVERITY_REASONS = {"OOMKilled", *BAD_WAITING_REASONS, *NODE_CONDITIONS, "Evicted"}
 
 # A normal rollout restart, scale-up or node reboot can leave a deployment
 # briefly short of ready replicas. Unavailable replicas only count as a
@@ -73,6 +74,25 @@ UNAVAILABLE_QUERY = (
     f'kube_deployment_status_replicas_unavailable{{namespace="{NAMESPACE}", '
     f'deployment=~"{K8S_DEPLOYMENT_REGEX}"}} > 0'
 )
+
+# Node-level pressure, any node: the kubelet sets these conditions when it
+# starts evicting (memory/disk/PIDs below its eviction thresholds).
+NODE_PRESSURE_QUERY = (
+    f'kube_node_status_condition{{condition=~"{"|".join(NODE_CONDITIONS)}", status="true"}} == 1'
+)
+
+# Pods the kubelet evicted (the pod object stays, phase Failed, reason Evicted)
+EVICTED_QUERY = f'kube_pod_status_reason{{{_POD_SELECTOR}, reason="Evicted"}} == 1'
+
+# FailedScheduling: no node can take the pod (e.g. the only matching node is tainted by pressure)
+UNSCHEDULABLE_QUERY = f"kube_pod_status_unschedulable{{{_POD_SELECTOR}}} == 1"
+
+# Pending for a long time for any other reason. Pods are Pending for a few
+# seconds on every start, so like unavailable replicas this needs a run.
+PENDING_QUERY = f'kube_pod_status_phase{{{_POD_SELECTOR}, phase="Pending"}} == 1'
+MIN_PENDING_SAMPLES = 4
+
+PREDICTED = "predicted_exhaustion"  # signals from predictor.py
 
 
 @dataclass
@@ -188,9 +208,35 @@ def fetch_k8s_signals(client, minutes_back: int, since=None, step: str = "30s") 
                         t, "replicas_unavailable", m.get("deployment", "unknown"), "ReplicasUnavailable", value,
                     ))
 
+    signals += _fetch_node_and_scheduling(client, start, end, step, step_td, window_start)
+
     if since is not None:
         signals = [s for s in signals if s.timestamp > since]
     return sorted(signals, key=lambda s: s.timestamp)
+
+
+def _fetch_node_and_scheduling(client, start, end, step, step_td, window_start) -> list[K8sSignal]:
+    """Node pressure conditions, evicted pods, unschedulable and long-Pending pods."""
+    signals = []
+    for series in client.query_range(NODE_PRESSURE_QUERY, start, end, step=step):
+        m = series["metric"]
+        for ts, _ in series["values"]:
+            signals.append(K8sSignal(_ts(ts), "node_pressure", m.get("node", "unknown"), m.get("condition", "unknown"), 1))
+
+    for query, kind, reason in ((EVICTED_QUERY, "evicted", "Evicted"),
+                                (UNSCHEDULABLE_QUERY, "unschedulable", "FailedScheduling")):
+        for series in client.query_range(query, start, end, step=step):
+            pod = series["metric"].get("pod", "unknown")
+            for ts, _ in series["values"]:
+                signals.append(K8sSignal(_ts(ts), kind, f"{pod}/pod", reason, 1))
+
+    pending_start = start - (step_td * (MIN_PENDING_SAMPLES - 1)).to_pytimedelta()
+    for series in client.query_range(PENDING_QUERY, pending_start, end, step=step):
+        pod = series["metric"].get("pod", "unknown")
+        for run in _consecutive_runs(series["values"], step_td):
+            if len(run) >= MIN_PENDING_SAMPLES:
+                signals += [K8sSignal(t, "pending", f"{pod}/pod", "Pending", 1) for t, _ in run if t >= window_start]
+    return signals
 
 
 def summarize_signals(signals: list[K8sSignal]) -> list[dict]:
@@ -206,7 +252,14 @@ def summarize_signals(signals: list[K8sSignal]) -> list[dict]:
             "first_seen": s.timestamp, "last_seen": s.timestamp, "value": 0,
         })
         g["last_seen"] = s.timestamp
-        g["value"] = g["value"] + s.value if s.kind == "restart" else max(g["value"], s.value)
+        if s.kind == "restart":
+            g["value"] += s.value
+        elif s.kind == PREDICTED:
+            # value = predicted seconds to breach; the most urgent warning counts
+            g["value"] = s.value if g["value"] == 0 else min(g["value"], s.value)
+            g["time_to_breach"] = g["value"]
+        else:
+            g["value"] = max(g["value"], s.value)
 
     return [
         {**g, "first_seen": str(g["first_seen"]), "last_seen": str(g["last_seen"])}
@@ -231,6 +284,16 @@ def describe_signal(summary: dict) -> str:
         return f"container {summary['target']} stuck waiting in {summary['reason']} {window}"
     if summary["kind"] == "terminated":
         return f"container {summary['target']} stopped after a crash (terminated: {summary['reason']}) {window}"
+    if summary["kind"] == PREDICTED:
+        resource = "memory" if summary["reason"].startswith("Memory") else "CPU"
+        return (f"PREDICTION: {resource} of pod {summary['target'].split('/')[0]} trending to 100% of its "
+                f"limit in ~{int(summary['value'])}s (least-squares trend) {window}")
+    if summary["kind"] == "node_pressure":
+        return f"node {summary['target']} reported {summary['reason']} {window}"
+    if summary["kind"] == "evicted":
+        return f"pod {summary['target'].split('/')[0]} was evicted by the kubelet {window}"
+    if summary["kind"] in ("unschedulable", "pending"):
+        return f"pod {summary['target'].split('/')[0]} stuck {summary['reason']} (not scheduled/started) {window}"
     return (f"deployment {summary['target']} had up to {int(summary['value'])} "
             f"unavailable replica(s) {window}")
 

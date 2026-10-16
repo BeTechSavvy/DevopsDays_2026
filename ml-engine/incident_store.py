@@ -110,13 +110,18 @@ class IncidentStore:
             query["workload"] = {"$in": [workload, None] if workload == DEFAULT_WORKLOAD else [workload]}
         return self.collection.find_one(query, {"_id": 0}, sort=[("start_dt", DESCENDING)])
 
-    def incident_spans(self, start, end, window: timedelta) -> list[tuple]:
-        """(start, end) of every stored incident, any workload, within `window` of [start, end]."""
+    def incident_spans(self, start, end, window: timedelta, workload: str | None = None) -> list[tuple]:
+        """
+        (start, end) of every stored incident within `window` of [start, end];
+        with `workload`, only that workload's incidents.
+        """
         lo, hi = _as_datetime(start) - window, _as_datetime(end) + window
+        query = {"start_dt": {"$lte": hi}, "end_dt": {"$gte": lo}}
+        if workload is not None:
+            query["workload"] = {"$in": [workload, None] if workload == DEFAULT_WORKLOAD else [workload]}
         return [
             (pd.Timestamp(d["start_dt"]), pd.Timestamp(d["end_dt"]))
-            for d in self.collection.find({"start_dt": {"$lte": hi}, "end_dt": {"$gte": lo}},
-                                          {"start_dt": 1, "end_dt": 1})
+            for d in self.collection.find(query, {"start_dt": 1, "end_dt": 1})
         ]
 
     def _free_id(self, incident_id: str) -> str:
@@ -217,7 +222,10 @@ def _merge_incident_docs(old: dict, new: dict) -> dict:
         g = signals[key]
         g["first_seen"] = min(g["first_seen"], s["first_seen"], key=pd.Timestamp)
         g["last_seen"] = max(g["last_seen"], s["last_seen"], key=pd.Timestamp)
-        g["value"] = max(g["value"], s["value"])
+        if s["kind"] == "predicted_exhaustion":  # seconds to breach: keep the most urgent
+            g["value"] = g["time_to_breach"] = min(g["value"], s["value"])
+        else:
+            g["value"] = max(g["value"], s["value"])
 
     parts = set(old.get("detection", "ml").split("+")) | set(new["detection"].split("+"))
     rank = CorrelationEngine._SEVERITY_RANK

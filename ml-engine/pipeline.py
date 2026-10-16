@@ -12,14 +12,24 @@ errors, unavailable replicas) are attached to overlapping ML incidents, and
 also raise rule-based incidents on their own when the ML model flags nothing.
 An incident overlapping one already stored is merged into it, not duplicated.
 
-Every new incident is sent to RCAEngine (Gemini + ChromaDB) and the result is
-attached to its MongoDB document under `diagnosis`. RCA is best-effort: if
-Gemini fails, the incident is kept without a diagnosis.
+Every workload in MONITORED_WORKLOADS (default flask-deployment and
+demo-db-app) is scored by its own detector. predictor.py adds
+predicted_exhaustion warnings (a resource trending to its limit within 10
+minutes) as signals of their own.
+
+Before diagnosis, each new or changed incident gets log/event evidence
+(evidence.py) and a counterfactual recommendation (counterfactual.py). Then
+it is sent to RCAEngine (Gemini + ChromaDB, with the evidence in the prompt)
+and the result is attached to its MongoDB document under `diagnosis`. RCA is
+best-effort: if Gemini fails, the incident is kept without a diagnosis, but
+still has its evidence and counterfactual.
 
 The detector is fitted on an EARLIER window ([now-60m, now-30m] by default)
 and only scores data after it, so it never judges the points it learned
-"normal" from. In --loop mode it refits every --refit-every cycles, unless
-a stored incident falls inside the baseline window.
+"normal" from. Rows of that workload's stored incidents are left out of the
+fit. In --loop mode it refits every --refit-every cycles (tracking slow
+drift, e.g. a process's memory creeping up), but never while one of that
+workload's incidents inside the baseline window is still open.
 
 Usage:
     python pipeline.py                 # one-shot pass over the last 30 minutes
@@ -31,23 +41,44 @@ Usage:
 
 import argparse
 import json
+import os
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
 
+import counterfactual
+import evidence
+import predictor
 from anomaly_detector import AnomalyDetector
 from config import FLASK_URL
 from correlation_engine import CorrelationEngine, Incident
 from incident_store import IncidentStore
 from k8s_signals import attach_k8s_signals, fetch_k8s_signals
-from prometheus_source import PrometheusClient
+from prometheus_source import PrometheusClient, queries_for
 
 FEATURE_COLUMNS = ["cpu_percent", "memory_percent", "error_rate"]
 MIN_BASELINE_ROWS = 20
 CYCLE_LOG = Path(__file__).resolve().parent / "logs" / "cycle_times.jsonl"
+WINDOW = timedelta(minutes=3)
+# Apps whose cpu/memory/error rate are scored, each against its own baseline
+MONITORED_WORKLOADS = os.environ.get("MONITORED_WORKLOADS", "flask-deployment,demo-db-app").split(",")
+
+
+@dataclass
+class Workload:
+    """One monitored app: its metric queries, its own detector and correlation engine."""
+    name: str
+    queries: dict
+    engine: CorrelationEngine
+    detector: AnomalyDetector | None = None  # None until a baseline could be fitted
+
+    @classmethod
+    def named(cls, name: str) -> "Workload":
+        return cls(name, queries_for(f"{name}-.*"), CorrelationEngine(time_window=WINDOW, workload=name))
 
 
 def create_rca_engine():
@@ -68,18 +99,58 @@ def _short_error(e, limit=150):
     return f"{type(e).__name__}: {text}"
 
 
-def diagnose_incidents(rca, store, incidents, stats=None):
+def enrich_incidents(client, store, incidents) -> dict:
+    """
+    For each incident about to be (re-)diagnosed: gathers log/event evidence
+    (evidence.py) and a counterfactual recommendation (counterfactual.py),
+    stores both on the incident, and returns {incident_id: (evidence, cf)}
+    for the RCA prompt. Best-effort per incident; never raises.
+    """
+    enrichments = {}
+    for incident in incidents:
+        try:
+            doc = store.collection.find_one({"incident_id": incident.incident_id}, {"_id": 0}) or incident.to_dict()
+            found = evidence.gather(doc)
+            doc["evidence"] = found
+            observed = counterfactual.fetch_observed(client, doc)
+            observed.update(_observed_from_evidence(found))
+            cf = counterfactual.recommend(doc, observed)
+            store.collection.update_one({"incident_id": incident.incident_id},
+                                        {"$set": {"evidence": found, "counterfactual": cf}})
+            enrichments[incident.incident_id] = (found, cf)
+        except Exception as e:
+            print(f"WARNING: could not gather evidence for incident {incident.incident_id} ({_short_error(e)}).")
+    return enrichments
+
+
+def _observed_from_evidence(found: dict) -> dict:
+    """Values the counterfactual rules can quote: the first error line, a failing image name."""
+    observed = {}
+    if found.get("logs"):
+        observed["first_error_line"] = found["logs"][0][:160]
+    for event in found.get("events", []):
+        if "Failed to pull image" in event and '"' in event:
+            observed["image"] = event.split('"')[1]
+            break
+    return observed
+
+
+def diagnose_incidents(rca, store, incidents, stats=None, enrichments=None):
     """
     Diagnoses each incident and attaches the result. Never raises. Every
     Gemini call, successful or not, is counted on the incident (llm_calls)
     and in `stats` (llm_calls, llm_seconds) for the cycle-time log.
+    `enrichments` (from enrich_incidents) adds the evidence to the prompt and
+    the counterfactual to the stored diagnosis.
     """
+    enrichments = enrichments or {}
     diagnosed = 0
     for incident in incidents:
+        found, cf = enrichments.get(incident.incident_id, (None, None))
         started = time.perf_counter()
         try:
             store.count_llm_call(incident.incident_id)
-            diagnosis = rca.diagnose(incident, persist=False)
+            diagnosis = rca.diagnose(incident, persist=False, evidence=found)
         except Exception as e:
             print(f"WARNING: RCA failed for incident {incident.incident_id} ({_short_error(e)}). Saved without diagnosis.")
             continue
@@ -100,6 +171,7 @@ def diagnose_incidents(rca, store, incidents, stats=None):
 
         # lets store.save_or_merge tell when a growing incident's diagnosis is stale
         diagnosis["based_on_anomalies"] = len(incident.anomalies)
+        diagnosis["counterfactual"] = cf
         try:
             store.save_diagnosis(incident.incident_id, diagnosis)
         except Exception as e:
@@ -142,24 +214,29 @@ def save_incidents(store, incidents, window):
     return new, merged, skipped, to_diagnose
 
 
-def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_incident=False):
+def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_open=False, queries=None,
+                 workload=None, quiet=False):
     """
     Fits a NEW detector on the earlier window [now-start_minutes, now-end_minutes],
     so the model never scores the data it was trained on. Returns
-    (detector, None) on success or (None, reason) if it couldn't fit.
+    (detector, message) on success or (None, reason) if it couldn't fit.
 
-    Stored incidents inside the window are not "normal": with
-    skip_if_incident (periodic refits) the refit is skipped and the old
-    model kept; otherwise (startup, where there's no old model) those
-    rows are left out of the fit.
+    Stored incidents (of `workload`, or any if None) inside the window are not
+    "normal", so their rows are left out of the fit. With skip_if_open
+    (periodic refits), the refit is skipped -- old model kept -- while such an
+    incident is still OPEN (still being extended, i.e. it ended less than
+    `window` ago): its true extent isn't known yet.
     """
-    end = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(minutes=end_minutes)
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    end = now - pd.Timedelta(minutes=end_minutes)
     start = end - pd.Timedelta(minutes=start_minutes - end_minutes)
-    spans = store.incident_spans(start, end, window)
-    if spans and skip_if_incident:
-        return None, f"{len(spans)} incident(s) inside the baseline window"
+    spans = store.incident_spans(start, end, window, workload)
+    open_spans = [s for s in spans if s[1] > now - window]
+    if open_spans and skip_if_open:
+        return None, f"{len(open_spans)} open incident(s) inside the baseline window"
 
-    df = client.get_metrics_dataframe(minutes_back=start_minutes, end_minutes_back=end_minutes)
+    df = client.get_metrics_dataframe(minutes_back=start_minutes, end_minutes_back=end_minutes, queries=queries,
+                                      quiet=quiet)
     missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
     if missing:
         return None, (
@@ -191,37 +268,60 @@ def log_cycle(seconds, stats, ok=True):
         f.write(json.dumps(record) + "\n")
 
 
-def run_once(client, detector, engine, store, minutes_back, since=None, rca=None, stats=None):
-    df = client.get_metrics_dataframe(minutes_back=minutes_back)
-    if since is not None:
-        df = df[df["timestamp"] > since]
-    signals = fetch_k8s_signals(client, minutes_back=minutes_back, since=since)
+def run_once(client, workloads, store, minutes_back, since=None, rca=None, stats=None):
+    """
+    One detection cycle over every fitted workload. `since` is the previous
+    cycle's last-seen timestamp (None on the first run); only newer data
+    counts. Returns the new last-seen timestamp.
+    """
+    incidents, n_points, n_anomalies = [], 0, 0
+    latest = []
+    for w in workloads:
+        if w.detector is None:
+            continue
+        df = client.get_metrics_dataframe(minutes_back=minutes_back, queries=w.queries)
+        if any(c not in df.columns for c in FEATURE_COLUMNS):
+            continue
+        if since is not None:
+            df = df[df["timestamp"] > since]
+        if df.empty:
+            continue
+        anomalies = w.detector.score_batch(df)
+        incidents += w.engine.correlate(anomalies)
+        n_points, n_anomalies = n_points + len(df), n_anomalies + len(anomalies)
+        latest.append(df["timestamp"].max())
 
-    if df.empty and not signals:
+    signals = fetch_k8s_signals(client, minutes_back=minutes_back, since=since)
+    warnings = predictor.fetch_predictions(client, since=since)
+    signals = sorted(signals + warnings, key=lambda s: s.timestamp)
+
+    if not latest and not signals:
         print("No new data points from Prometheus this cycle.")
         return since
 
-    anomalies = detector.score_batch(df) if not df.empty else []
-    incidents = engine.correlate(anomalies)
-    rule_incidents = attach_k8s_signals(incidents, signals, engine.time_window)
+    rule_incidents = attach_k8s_signals(incidents, signals, WINDOW)
     incidents += rule_incidents
-
-    last_seen = df["timestamp"].max() if not df.empty else signals[-1].timestamp
+    last_seen = max(latest) if latest else signals[-1].timestamp
 
     if not incidents:
-        print(f"[{last_seen}] {len(df)} points scored, no anomalies, no Kubernetes signals.")
+        print(f"[{last_seen}] {n_points} points scored, no anomalies, no Kubernetes signals.")
         return last_seen
 
-    new, merged, skipped, to_diagnose = save_incidents(store, incidents, engine.time_window)
+    new, merged, skipped, to_diagnose = save_incidents(store, incidents, WINDOW)
 
     print(
-        f"[{last_seen}] {len(anomalies)} anomalies, {len(signals)} k8s signal samples "
-        f"({len(rule_incidents)} rule-only incidents) -> {new} new, {merged} merged into existing incidents"
+        f"[{last_seen}] {n_anomalies} anomalies, {len(signals)} k8s signal samples "
+        f"({len(warnings)} exhaustion predictions; {len(rule_incidents)} rule-only incidents) -> "
+        f"{new} new, {merged} merged into existing incidents"
         + (f", {skipped} single weak anomalies ignored." if skipped else ".")
     )
-    if rca is not None and to_diagnose:
-        diagnosed = diagnose_incidents(rca, store, to_diagnose, stats)
-        print(f"RCA: {diagnosed}/{len(to_diagnose)} incidents diagnosed.")
+    for w in warnings:
+        print(f"  PREDICTION: {predictor.describe(w)}")
+    if to_diagnose:
+        enrichments = enrich_incidents(client, store, to_diagnose)
+        if rca is not None:
+            diagnosed = diagnose_incidents(rca, store, to_diagnose, stats, enrichments)
+            print(f"RCA: {diagnosed}/{len(to_diagnose)} incidents diagnosed.")
 
     return last_seen
 
@@ -253,22 +353,35 @@ def main():
         raise SystemExit(1)
     store.backfill_datetimes()
 
-    engine = CorrelationEngine(time_window=timedelta(minutes=3))
+    workloads = [Workload.named(name.strip()) for name in MONITORED_WORKLOADS if name.strip()]
 
-    print(f"Fitting detector on [now-{args.baseline_start}m, now-{args.baseline_end}m] as the 'normal' baseline...")
-    detector, message = fit_baseline(client, store, args.baseline_start, args.baseline_end, engine.time_window)
-    if detector is None:
+    def fit(w, skip_if_open=False, quiet=False):
+        """Fits (or refits) one workload's baseline; returns the reason if it couldn't."""
+        detector, message = fit_baseline(client, store, args.baseline_start, args.baseline_end, WINDOW,
+                                         skip_if_open=skip_if_open, queries=w.queries, workload=w.name,
+                                         quiet=quiet)
+        if detector is not None:
+            w.detector = detector
+            print(f"  {w.name}: baseline {message}.")
+            return None
+        return message
+
+    print(f"Fitting detectors on [now-{args.baseline_start}m, now-{args.baseline_end}m] as the 'normal' baseline...")
+    for w in workloads:
+        problem = fit(w)
+        if problem:
+            print(f"  {w.name}: can't fit yet ({problem}); will retry every cycle.")
+    if all(w.detector is None for w in workloads):
         print(
-            f"Can't fit a baseline: {message}.\n"
+            "Can't fit a baseline for any workload.\n"
             "Let normal traffic build up longer (the cluster needs ~"
             f"{args.baseline_start} min of history), or use a shorter window, e.g. "
             "--baseline-start 20 --baseline-end 5. To generate traffic:\n"
-            "  kubectl port-forward svc/flask-service 30001:5000      # own terminal\n"
-            "  python chaos/baseline_traffic.py --minutes 25          # from the repo root\n"
+            "  kubectl apply -f chaos/baseline-traffic.yaml           # in-cluster, from the repo root\n"
+            "  python chaos/baseline_traffic.py --minutes 25          # or via the port-forward\n"
             f"(the traffic scripts use FLASK_URL, currently {FLASK_URL})"
         )
         raise SystemExit(1)
-    print(f"Baseline {message}.")
 
     if args.no_rca:
         print("RCA disabled (--no-rca). Incidents will be saved without a diagnosis.")
@@ -277,7 +390,7 @@ def main():
         rca = create_rca_engine()
 
     # score only what came after the baseline window
-    last_seen = run_once(client, detector, engine, store, minutes_back=args.baseline_end, rca=rca)
+    last_seen = run_once(client, workloads, store, minutes_back=args.baseline_end, rca=rca)
 
     if not args.loop:
         return
@@ -289,22 +402,21 @@ def main():
             time.sleep(args.interval)
             cycle += 1
             minutes_back = max(2, args.interval // 60 + 2)
-            try:
-                if args.refit_every and cycle % args.refit_every == 0:
-                    refit, message = fit_baseline(client, store, args.baseline_start, args.baseline_end,
-                                                  engine.time_window, skip_if_incident=True)
-                    if refit is None:
-                        print(f"Refit skipped, keeping the current baseline: {message}.")
-                    else:
-                        detector = refit
-                        print(f"Baseline refitted: {message}.")
-            except Exception:
-                print("Refit failed, keeping the current baseline. Traceback:")
-                traceback.print_exc()
+            for w in workloads:
+                try:
+                    if w.detector is None:
+                        fit(w, quiet=True)  # not enough history at startup; keep trying (quietly)
+                    elif args.refit_every and cycle % args.refit_every == 0:
+                        problem = fit(w, skip_if_open=True)
+                        if problem:
+                            print(f"  {w.name}: refit skipped, keeping the current baseline: {problem}.")
+                except Exception:
+                    print(f"Refit of {w.name} failed, keeping the current baseline. Traceback:")
+                    traceback.print_exc()
 
             stats, started = {}, time.perf_counter()
             try:
-                last_seen = run_once(client, detector, engine, store, minutes_back=minutes_back,
+                last_seen = run_once(client, workloads, store, minutes_back=minutes_back,
                                      since=last_seen, rca=rca, stats=stats)
                 log_cycle(time.perf_counter() - started, stats)
             except Exception:

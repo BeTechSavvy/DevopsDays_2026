@@ -11,9 +11,16 @@ One shared vocabulary, so that
   - counterfactual recommendations are chosen by kind.
 """
 
+import re
+
 from anomaly_detector import METRIC_HIGH_THRESHOLDS
 
+# an app's own error lines that mean "my database is unreachable"
+_DB_ERROR = re.compile(r"(?i)(database|redis|postgres|mysql|mongo).{0,80}(unavailable|refused|cannot reach|"
+                       r"could not connect|connection|timed? ?out)|connection refused")
+
 OOM_KILLED = "OOMKilled"
+DB_CONNECTION = "db_connection"
 CRASH_LOOP = "CrashLoopBackOff"
 IMAGE_PULL = "ImagePullBackOff"
 REPLICAS_UNAVAILABLE = "ReplicasUnavailable"
@@ -57,13 +64,20 @@ def incident_kinds(doc: dict) -> set[str]:
         for col, limit in METRIC_HIGH_THRESHOLDS.items():
             if metrics.get(col, 0) > limit:
                 kinds.add(_METRIC_KINDS[col])
+    # the kubelet only evicts pods when its node is under pressure
+    if "evicted" in kinds:
+        kinds.add("node_pressure")
+    # failing requests + the app's logs saying the database is unreachable
+    logs = (doc.get("evidence") or {}).get("logs", [])
+    if ERROR_SPIKE in kinds and any(_DB_ERROR.search(line) for line in logs):
+        kinds.add(DB_CONNECTION)
     return kinds
 
 
 def primary_kind(doc: dict) -> str | None:
     """The single most specific kind, for picking a recommendation."""
     kinds = incident_kinds(doc)
-    for kind in (OOM_KILLED, IMAGE_PULL, "node_pressure", "evicted", "unschedulable", "db_connection",
+    for kind in (OOM_KILLED, IMAGE_PULL, "node_pressure", "evicted", "unschedulable", DB_CONNECTION,
                  CRASH_LOOP, CPU_SATURATION, MEMORY_SATURATION, ERROR_SPIKE,
                  "predicted_exhaustion", REPLICAS_UNAVAILABLE):
         if kind in kinds:

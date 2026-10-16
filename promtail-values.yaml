@@ -1,41 +1,23 @@
+# promtail-values.yaml
+#
+#   helm install promtail grafana/promtail -f promtail-values.yaml
+#
+# Uses the chart's default Kubernetes scrape config, which tails each pod's
+# OWN files (/var/log/pods/<namespace>_<pod>_<uid>/<container>/*.log) and
+# only the pods on the node each Promtail runs on, labelled with namespace,
+# pod, container and app. (An earlier custom config pointed every target at
+# /var/log/containers/*.log, so every pod was tagged with every other pod's
+# lines -- ml-engine/evidence.py needs per-pod logs.)
+#
+# Minikube's container runtime is Docker, so log files are Docker JSON:
+# parse them with the docker stage instead of the chart's default cri stage.
+
 daemonset:
   enabled: true
 
 config:
   clients:
     - url: http://loki-gateway.default.svc.cluster.local/loki/api/v1/push
-
   snippets:
-    scrapeConfigs: |
-      - job_name: kubernetes-pods
-
-        kubernetes_sd_configs:
-          - role: pod
-
-        pipeline_stages:
-          - docker: {}
-
-        relabel_configs:
-          - source_labels:
-              - __meta_kubernetes_namespace
-            target_label: namespace
-
-          - source_labels:
-              - __meta_kubernetes_pod_name
-            target_label: pod
-
-          - source_labels:
-              - __meta_kubernetes_pod_container_name
-            target_label: container
-
-          - replacement: /var/log/containers/*.log
-            target_label: __path__
-
-extraVolumes:
-  - name: varlog
-    hostPath:
-      path: /var/log
-
-extraVolumeMounts:
-  - name: varlog
-    mountPath: /var/log
+    pipelineStages:
+      - docker: {}

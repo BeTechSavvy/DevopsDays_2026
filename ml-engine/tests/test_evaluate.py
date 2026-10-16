@@ -96,6 +96,15 @@ def test_scores_per_scenario_and_overall():
     assert by_id["e1"].mttd_seconds() is None  # no stored_at
 
 
+def test_target_alternatives():
+    inj = _inj("node_pressure", 0, 4, "minikube-m02|chaos-node-stress", "node_pressure")
+    matches, fps = match_all([inj], [_inc("node", 1, 3, "minikube-m02"), _inc("pod", 1.5, 3, "chaos-node-stress"),
+                                     _inc("fp", 30, 31, "chaos-node-stress")])
+    assert [d["incident_id"] for d in matches[0].incidents] == ["node", "pod"]
+    s = score(matches, fps)
+    assert s["scenarios"]["node_pressure"]["fp"] == 1 and s["fp_other"] == 0
+
+
 def test_prf_edge_cases():
     assert prf(0, 0, 0)["f1"] is None
     assert prf(0, 2, 3) == {"tp": 0, "fp": 2, "fn": 3, "precision": 0.0, "recall": 0.0, "f1": 0.0}

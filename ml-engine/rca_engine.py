@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import GEMINI_MODEL, ML_ENGINE_DIR  # config loads GOOGLE_API_KEY from ml-engine/.env
 from correlation_engine import Incident
+from evidence import describe as describe_evidence
 from incident_store import IncidentStore
 from k8s_signals import describe_signal
 
@@ -46,16 +47,22 @@ diagnose Kubernetes cluster incidents. You will be given:
 1. Details of a CURRENT incident (anomalous metrics detected by an ML model),
    possibly with Kubernetes state signals from kube-state-metrics: container
    restarts and their termination reason (e.g. OOMKilled, Error), containers
-   stuck waiting (e.g. CrashLoopBackOff, ImagePullBackOff, ErrImagePull), and
-   deployments with unavailable replicas
-2. Similar PAST incidents retrieved from history, if any exist
+   stuck waiting (e.g. CrashLoopBackOff, ImagePullBackOff, ErrImagePull),
+   deployments with unavailable replicas, node pressure (MemoryPressure,
+   DiskPressure), evicted or unschedulable pods, and PREDICTION warnings
+   (a resource trending to its limit, with the predicted seconds left)
+2. Evidence, when available: Kubernetes events and error lines from the
+   affected pods' logs (Loki)
+3. Similar PAST incidents retrieved from history, if any exist
 
 Your job is to produce a clear, human-readable diagnosis. Be concise and
 practical - an engineer will read this under time pressure during an
 active incident. Do not invent facts not supported by the data given.
-Kubernetes signals are direct evidence of what the cluster observed - when
-present, name them explicitly in the root cause (e.g. which container was
-OOMKilled) rather than inferring the cause from metrics alone.
+Kubernetes signals, events and log lines are direct evidence of what the
+cluster observed - when present, name them explicitly in the root cause
+(e.g. which container was OOMKilled, the exact error a log line shows)
+rather than inferring the cause from metrics alone. A PREDICTION alone means
+the failure has not happened yet; say so.
 
 Respond ONLY in this exact JSON format, nothing else:
 {
@@ -98,7 +105,7 @@ class RCAEngine:
         if not self.mongo_available:
             print("Warning: MongoDB not reachable. Diagnoses will not be persisted.")
 
-    def _incident_to_text(self, incident: Incident) -> str:
+    def _incident_to_text(self, incident: Incident, evidence: dict | None = None) -> str:
         """
         Converts an Incident into a plain-text description, both for
         storing in Chroma (which needs text to embed) and for feeding
@@ -119,11 +126,14 @@ class RCAEngine:
             if incident.k8s_signals
             else ""
         )
+        evidence_text = describe_evidence(evidence) if evidence else ""
+        evidence_block = f"\n{evidence_text}" if evidence_text else ""
         return (
             f"Incident {incident.incident_id}: {incident.start_time} to {incident.end_time}\n"
+            f"Workload: {incident.workload}\n"
             f"Detected by: {DETECTION_LABELS.get(incident.detection, incident.detection)}\n"
             f"Max severity: {incident.max_severity}, avg confidence: {incident.avg_confidence:.2f}\n"
-            f"{anomalies_block}{signals_block}"
+            f"{anomalies_block}{signals_block}{evidence_block}"
         )
 
     def _retrieve_similar_incidents(self, incident_text: str, n_results: int = 3) -> list[str]:
@@ -155,7 +165,7 @@ class RCAEngine:
             }],
         )
 
-    def diagnose(self, incident: Incident, persist: bool = True) -> dict:
+    def diagnose(self, incident: Incident, persist: bool = True, evidence: dict | None = None) -> dict:
         """
         Main entry point. Returns a dict with summary, likely_root_cause,
         confidence_reasoning, and suggested_fix - ready to hand to the
@@ -169,8 +179,10 @@ class RCAEngine:
 
         If the Gemini call itself fails, the returned dict has an "error"
         key (and no diagnosis fields); it never raises for that.
+
+        `evidence` (evidence.gather) adds K8s events and log lines to the prompt.
         """
-        incident_text = self._incident_to_text(incident)
+        incident_text = self._incident_to_text(incident, evidence)
         similar_past = self._retrieve_similar_incidents(incident_text)
 
         context_block = (

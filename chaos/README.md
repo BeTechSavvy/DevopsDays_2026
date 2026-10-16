@@ -74,9 +74,29 @@ the combined limit), and paused between requests.
 | **Expected** | New pods in **ErrImagePull / ImagePullBackOff** while the old ones keep serving: a **HIGH** rule incident for `chaos-rollout`. |
 | **Recovery** | Rollback, then the script deletes the Deployment. Manual: `kubectl delete deployment chaos-rollout`. |
 
+## (e) Node memory pressure
+
+| | |
+|---|---|
+| **Setup (once per `minikube start`)** | `powershell -ExecutionPolicy Bypass -File .\chaos\setup-node-pressure.ps1` -- gives node 2's kubelet a `memory.available` eviction threshold (minikube's default config has none; see the script header). |
+| **Trigger** | `python chaos/node_pressure.py` (~4 min). Refuses to run without the setup. |
+| **What it does** | Runs `chaos/node-stress.yaml`: a BestEffort pod pinned to node 2 (`minikube-m02`) that takes ~1.6 GiB. Monitoring is pinned to node 1. |
+| **Expected** | Node 2 reports **MemoryPressure**, the stress pod is **Evicted**, its replacement can't be scheduled: HIGH rule incidents for node `minikube-m02` / workload `chaos-node-stress`. |
+| **Recovery** | The script deletes the Deployment and evicted pods. |
+
+## (f) Database connectivity loss
+
+| | |
+|---|---|
+| **Setup (once)** | `minikube image build -t demo-db-app demo-db/ --all` and `kubectl apply -f demo-db/demo-db.yaml` (orders service + Redis). |
+| **Trigger** | `python chaos/db_failure.py` (~4 min) |
+| **What it does** | Scales `demo-redis` to 0 for 4 minutes, then back to 1. |
+| **Expected** | `demo-db-app` answers 500 "database unavailable" to the baseline traffic, so its error_rate jumps to ~100%: an ML incident for `demo-db-app` with "cannot reach redis" log lines as evidence (kind `db_connection`). |
+| **Recovery** | The script scales Redis back to 1 (also on Ctrl+C). Manual: `kubectl scale deployment demo-redis --replicas=1`. |
+
 ## Running all of them (evaluation)
 
 `python chaos/run_all.py` runs every scenario in sequence, 3 rounds, with 6-minute
-cool-downs, with `pipeline.py --loop` running. Each script appends
+cool-downs (~2.5 hours), with `pipeline.py --loop` running. Each script appends
 its ground truth (`scenario, start, end, target, expected_kind`) to
 `chaos/injections.jsonl`; then `python eval/evaluate.py` scores the run.
