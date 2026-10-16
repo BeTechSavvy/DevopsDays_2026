@@ -96,7 +96,8 @@ the combined limit), and paused between requests.
 
 ## Running all of them (evaluation)
 
-`python chaos/run_all.py` runs every scenario in sequence, 3 rounds, with 6-minute
-cool-downs (~2.5 hours), with `pipeline.py --loop` running. Each script appends
+`python chaos/run_all.py` runs all seven (the six scenarios plus the error-spike
+validation run) in sequence, 3 rounds, with 6-minute
+cool-downs (~3.8 hours), with `pipeline.py --loop` running. Each script appends
 its ground truth (`scenario, start, end, target, expected_kind`) to
 `chaos/injections.jsonl`; then `python eval/evaluate.py` scores the run.

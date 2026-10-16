@@ -41,7 +41,17 @@ def _as_datetime(value):
     return ts.floor("ms").to_pydatetime()  # MongoDB stores milliseconds
 
 
+def _plain(value):
+    """numpy scalars (e.g. a restart count from pandas) -> Python ones; BSON can't encode numpy types."""
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value.item() if hasattr(value, "item") and type(value).__module__ == "numpy" else value
+
+
 def _with_datetimes(doc: dict) -> dict:
+    doc = _plain(doc)
     return {**doc, "start_dt": _as_datetime(doc["start_time"]), "end_dt": _as_datetime(doc["end_time"])}
 
 

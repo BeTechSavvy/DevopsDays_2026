@@ -227,3 +227,12 @@ if __name__ == "__main__":
             print(f"FAIL  {name}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     raise SystemExit(1 if failed else 0)
+
+
+def test_numpy_scalars_become_plain_python():
+    import numpy as np
+    from incident_store import _with_datetimes
+    doc = _with_datetimes({"start_time": "2026-10-16 08:46:00", "end_time": "2026-10-16 08:47:00",
+                           "signals": [{"value": np.int64(0), "extra": {"r": np.float64(1.5)}}]})
+    assert type(doc["signals"][0]["value"]) is int
+    assert type(doc["signals"][0]["extra"]["r"]) is float
