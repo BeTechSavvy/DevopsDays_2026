@@ -15,13 +15,13 @@ function Header([string]$Text) { Write-Host "`n-- $Text" -ForegroundColor Cyan }
 function Mark([bool]$Ok) { if ($Ok) { "OK  " } else { "DOWN" } }
 
 Header "Nodes"
-kubectl get nodes 2>&1 | Out-Host
+kubectl get nodes 2>&1 | ForEach-Object { Write-Host "  $_" }
 
 Header "Pods not Running (all namespaces)"
 $pods = kubectl get pods -A --field-selector=status.phase!=Running --no-headers 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "kubectl failed: $pods" }
 elseif (-not $pods) { Write-Host "none" }
-else { $pods | Out-Host }
+else { $pods | ForEach-Object { Write-Host "  $_" } }
 
 Header "Endpoints"
 $endpoints = [ordered]@{
@@ -29,11 +29,11 @@ $endpoints = [ordered]@{
     "Flask      :30001" = "http://localhost:30001/"
     "Loki       :3100" = "http://localhost:3100/ready"
     "Grafana    :3000" = "http://localhost:3000/api/health"
-    "API        :5050" = "http://localhost:5050/api/health"
+    "API        :5050" = "http://127.0.0.1:5050/api/health"
     "Dashboard  :5173" = "http://localhost:5173/"
 }
 foreach ($name in $endpoints.Keys) {
-    Write-Host ("  {0} {1}" -f (Mark (Test-Http $endpoints[$name] 2)), $name)
+    Write-Host ("  {0} {1}" -f (Mark (Test-Http $endpoints[$name] 3)), $name)
 }
 $mongo = Get-MongoEndpoint
 Write-Host ("  {0} MongoDB    {1}:{2}" -f (Mark (Test-Tcp $mongo.Host $mongo.Port)), $mongo.Host, $mongo.Port)

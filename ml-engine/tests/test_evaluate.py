@@ -109,3 +109,28 @@ def test_prf_edge_cases():
     assert prf(0, 0, 0)["f1"] is None
     assert prf(0, 2, 3) == {"tp": 0, "fp": 2, "fn": 3, "precision": 0.0, "recall": 0.0, "f1": 0.0}
     assert prf(3, 0, 0)["f1"] == 1.0
+
+
+def test_pipeline_usage_keeps_samples_inside_the_period(tmp_path):
+    from evaluate import pipeline_usage
+    path = tmp_path / "usage.csv"
+    path.write_text("time,pids,cpu_percent,cpu_percent_machine,working_set_mb,private_mb\n"
+                    "2026-10-16 08:00:00,1 2,50.00,6.25,300.0,280.0\n"
+                    "2026-10-16 09:00:00,1 2,2.00,0.25,200.0,180.0\n"
+                    "2026-10-16 09:01:00,1 2,4.00,0.50,220.0,190.0\n", encoding="utf-8")
+    u = pipeline_usage(pd.Timestamp("2026-10-16 08:30"), pd.Timestamp("2026-10-16 10:00"), path)
+    assert u["cpu_percent"]["n"] == 2
+    assert u["cpu_percent"]["mean"] == 3.0 and u["cpu_percent"]["max"] == 4.0
+    assert u["working_set_mb"]["max"] == 220.0
+    assert pipeline_usage(pd.Timestamp("2026-10-16 08:30"), pd.Timestamp("2026-10-16 10:00"),
+                          tmp_path / "missing.csv")["cpu_percent"]["n"] == 0
+
+
+def test_rca_grades_yes_partial_no():
+    from evaluate import _grade, rca_scores
+    assert [_grade(v) for v in ("yes", "Y", "partial", "p", "no", "", None)] == \
+        ["yes", "yes", "partial", "partial", "no", None, None]
+    s = rca_scores(["yes", "yes", "partial", "no", None])
+    assert (s["graded"], s["yes"], s["partial"], s["no"]) == (4, 2, 1, 1)
+    assert s["accuracy"] == 0.5 and s["weighted"] == 0.625
+    assert rca_scores([None])["accuracy"] is None

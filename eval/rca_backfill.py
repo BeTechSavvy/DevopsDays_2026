@@ -44,6 +44,10 @@ def main():
     parser.add_argument("--model", help="Gemini model to use (default: GEMINI_MODEL from ml-engine/.env)")
     parser.add_argument("--limit", type=int, default=25, help="At most this many Gemini calls")
     parser.add_argument("--delay", type=float, default=5, help="Seconds between calls (free-tier rate limits)")
+    parser.add_argument("--priority-since",
+                        help="Order by priority when the quota won't cover everything: injections from this "
+                             "UTC time (e.g. the fixed-code runs) first, then the rest by round, latest round "
+                             "first (one detection per injection is one per scenario per round)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.model:
@@ -59,11 +63,22 @@ def main():
     matches, _ = match_all(injections, load_incidents(store, start, end))
 
     todo = [m for m in matches if m.detected and not m.first.get("diagnosis")]
+    if args.priority_since:
+        # round = the k-th injection of its scenario, in time order
+        seen, rounds = {}, {}
+        for m in sorted(matches, key=lambda m: m.injection.start):
+            seen[m.injection.scenario] = seen.get(m.injection.scenario, 0) + 1
+            rounds[id(m)] = seen[m.injection.scenario]
+        first = ts(args.priority_since)
+        todo.sort(key=lambda m: (m.injection.start < first,                        # (1) fixed-code runs
+                                 -rounds[id(m)] if m.injection.start < first else 0,  # (2) latest round first
+                                 m.injection.start))
     print(f"{len(injections)} injections, {sum(m.detected for m in matches)} detected, "
           f"{len(todo)} detections without a diagnosis; diagnosing up to {args.limit}.")
     if args.dry_run:
         for m in todo[:args.limit]:
-            print(f"  {m.injection.scenario:15} {m.first['incident_id']}  {m.first['workload']}")
+            print(f"  {m.injection.scenario:15} {m.first['incident_id']}  {m.first['workload']:18} "
+                  f"{str(m.injection.start)[11:19]}")
         return
 
     from rca_engine import RCAEngine
@@ -93,6 +108,7 @@ def main():
             diagnosis["based_on_anomalies"] = len(incident.anomalies)
             diagnosis["counterfactual"] = doc.get("counterfactual")
             diagnosis["backfilled"] = True
+            diagnosis["model"] = rca.llm.model
             store.save_diagnosis(incident.incident_id, diagnosis)
             done += 1
             print(f"  {m.injection.scenario:15} {incident.incident_id}: {diagnosis.get('likely_root_cause', '')[:110]}")

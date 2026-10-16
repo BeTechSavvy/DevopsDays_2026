@@ -49,6 +49,23 @@ def get_incidents_by_severity(severity):
     return jsonify(incidents)
 
 
+@app.route("/api/incidents/severity", methods=["GET"])
+def get_severity_counts():
+    """Number of incidents per severity, e.g. {"high": 12, "medium": 30, "low": 9, "total": 51}."""
+    counts = store.severity_counts()
+    return jsonify({**counts, "total": sum(counts.values())})
+
+
+@app.route("/api/incidents/<incident_id>", methods=["GET"])
+def get_incident(incident_id):
+    """One incident by id, e.g. /api/incidents/0b0b98c0, with its diagnosis and evidence; 404 if unknown."""
+    doc = store.get_by_id(incident_id)
+    if doc is None:
+        return jsonify({"error": f"no incident {incident_id}"}), 404
+    doc["_id"] = str(doc["_id"])
+    return jsonify(doc)
+
+
 if __name__ == "__main__":
     if not store.is_connected():
         print("Warning: MongoDB not reachable. The dashboard will show no data.")

@@ -175,7 +175,7 @@ if (Wait-Http "http://localhost:9090/-/ready" 90) {
 }
 
 Step "Waiting for the API"
-if (Wait-Http "http://localhost:5050/api/health" 90) {
+if (Wait-Http "http://127.0.0.1:5050/api/health" 90) {
     Write-Host "API is up: http://localhost:5050/api/health"
 } else {
     Write-Host "API didn't answer within 90 s -- check the api tab." -ForegroundColor Yellow
