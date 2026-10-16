@@ -44,17 +44,22 @@ def queries_for(pod_regex: str) -> dict:
     "flask-deployment-.*" or "demo-db-app-.*" -- every monitored workload is
     an app instrumented with prometheus_flask_exporter, with limits set.
     """
+    # The average of each pod's usage/limit, not sum(usage)/sum(limits): when one
+    # pod's cAdvisor sample arrives late (Prometheus logs "out-of-order samples"
+    # for the kubelet), the sum loses that pod's numerator but keeps its limit,
+    # and memory_percent halved for one point -- a fake anomaly. The average
+    # simply uses the pods it has. With equal limits per pod both are the same.
     cpu = (
-        f'100 * sum(rate(container_cpu_usage_seconds_total{{namespace="{NAMESPACE}", '
+        f'100 * avg(sum by (pod) (rate(container_cpu_usage_seconds_total{{namespace="{NAMESPACE}", '
         f'pod=~"{pod_regex}", cpu="total"}}[2m])) '
-        f'/ sum(kube_pod_container_resource_limits{{namespace="{NAMESPACE}", '
-        f'pod=~"{pod_regex}", resource="cpu"}})'
+        f'/ sum by (pod) (kube_pod_container_resource_limits{{namespace="{NAMESPACE}", '
+        f'pod=~"{pod_regex}", resource="cpu"}}))'
     )
     memory = (
-        f'100 * sum(container_memory_working_set_bytes{{namespace="{NAMESPACE}", '
+        f'100 * avg(sum by (pod) (container_memory_working_set_bytes{{namespace="{NAMESPACE}", '
         f'pod=~"{pod_regex}"}}) '
-        f'/ sum(kube_pod_container_resource_limits{{namespace="{NAMESPACE}", '
-        f'pod=~"{pod_regex}", resource="memory"}})'
+        f'/ sum by (pod) (kube_pod_container_resource_limits{{namespace="{NAMESPACE}", '
+        f'pod=~"{pod_regex}", resource="memory"}}))'
     )
     # flask_http_request_total{status=...} comes from prometheus_flask_exporter
     # in app.py. clamp_min avoids a divide-by-zero (and therefore missing data
