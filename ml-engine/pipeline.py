@@ -56,7 +56,7 @@ import predictor
 from anomaly_detector import AnomalyDetector
 from config import FLASK_URL
 from correlation_engine import CorrelationEngine, Incident
-from incident_store import IncidentStore
+from incident_store import MAX_INCIDENT_DURATION, QUIET_CLOSE, IncidentStore, is_noise, significant_times
 from k8s_signals import attach_k8s_signals, fetch_k8s_signals
 from prometheus_source import PrometheusClient, queries_for
 
@@ -227,14 +227,32 @@ def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_open
     (periodic refits), the refit is skipped -- old model kept -- while such an
     incident is still OPEN (still being extended, i.e. it ended less than
     `window` ago): its true extent isn't known yet.
+
+    Except for stale noise: an incident with only low/medium anomalies and no
+    Kubernetes signals that has lasted QUIET_CLOSE or longer is a slow shift
+    in "normal" (e.g. memory creeping up), not a fault. It doesn't block a
+    refit and its rows are kept, so the baseline can follow the drift --
+    otherwise the stale baseline flags the drift forever and the incident it
+    opens blocks every refit. An incident longer than MAX_INCIDENT_DURATION
+    (only possible before incidents were closed) loses just the rows around
+    its high anomalies and Kubernetes signals, not its whole span.
     """
     now = pd.Timestamp.now(tz="UTC").tz_localize(None)
     end = now - pd.Timedelta(minutes=end_minutes)
     start = end - pd.Timedelta(minutes=start_minutes - end_minutes)
-    spans = store.incident_spans(start, end, window, workload)
-    open_spans = [s for s in spans if s[1] > now - window]
-    if open_spans and skip_if_open:
-        return None, f"{len(open_spans)} open incident(s) inside the baseline window"
+    docs = store.incidents_near(start, end, window, workload)
+
+    def span(d):
+        return pd.Timestamp(d["start_dt"]), pd.Timestamp(d["end_dt"])
+
+    def stale_noise(d):
+        lo, hi = span(d)
+        last = now if hi > now - window else hi   # an open incident lasts at least until now
+        return is_noise(d) and last - lo >= QUIET_CLOSE
+
+    blocking = [d for d in docs if span(d)[1] > now - window and not stale_noise(d)]
+    if blocking and skip_if_open:
+        return None, f"{len(blocking)} open incident(s) inside the baseline window"
 
     df = client.get_metrics_dataframe(minutes_back=start_minutes, end_minutes_back=end_minutes, queries=queries,
                                       quiet=quiet)
@@ -247,8 +265,15 @@ def fit_baseline(client, store, start_minutes, end_minutes, window, skip_if_open
     # drop each incident's own span +/- one sample -- not +/- the whole correlation
     # window, which made two short blips eat ~12 of 30 minutes and blocked refits
     margin = pd.Timedelta(BASELINE_STEP)
-    for lo, hi in spans:
-        df = df[(df["timestamp"] < lo - margin) | (df["timestamp"] > hi + margin)]
+    excluded = [d for d in docs if not stale_noise(d)]
+    for d in excluded:
+        lo, hi = span(d)
+        if hi - lo > MAX_INCIDENT_DURATION:
+            for t in significant_times(d, severities=("high",)):
+                df = df[(df["timestamp"] < t - margin) | (df["timestamp"] > t + margin)]
+        else:
+            df = df[(df["timestamp"] < lo - margin) | (df["timestamp"] > hi + margin)]
+    spans = excluded
     if len(df) < MIN_BASELINE_ROWS:
         return None, (
             f"only {len(df)} clean data points in [now-{start_minutes}m, now-{end_minutes}m]"

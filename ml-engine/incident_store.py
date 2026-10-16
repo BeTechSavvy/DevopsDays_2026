@@ -32,6 +32,14 @@ from correlation_engine import DEFAULT_WORKLOAD, CorrelationEngine, Incident
 DB_NAME = MONGO_DB
 COLLECTION_NAME = "incidents"
 
+# An incident stops absorbing new anomalies (the next one starts a new incident)
+# once it has gone QUIET_CLOSE without anything above low severity, or once it
+# is MAX_INCIDENT_DURATION old. Without this, steady low/medium noise kept one
+# incident open for hours, which also blocked every baseline refit -- see
+# is_closed() and pipeline.fit_baseline().
+QUIET_CLOSE = timedelta(minutes=10)
+MAX_INCIDENT_DURATION = timedelta(minutes=30)
+
 
 def _as_datetime(value):
     """String or Timestamp -> naive-UTC python datetime, the form MongoDB stores."""
@@ -53,6 +61,30 @@ def _plain(value):
 def _with_datetimes(doc: dict) -> dict:
     doc = _plain(doc)
     return {**doc, "start_dt": _as_datetime(doc["start_time"]), "end_dt": _as_datetime(doc["end_time"])}
+
+
+def significant_times(doc: dict, severities=("medium", "high")) -> list:
+    """Times of the incident's anomalies of `severities` and of its Kubernetes signals."""
+    times = [_as_datetime(a["timestamp"]) for a in doc.get("anomalies", []) if a.get("severity") in severities]
+    times += [_as_datetime(s["last_seen"]) for s in doc.get("k8s_signals", []) if s.get("last_seen")]
+    return times
+
+
+def is_closed(doc: dict, at) -> bool:
+    """
+    True if `doc` should no longer be extended by activity at time `at`: it is
+    MAX_INCIDENT_DURATION old, or its last medium/high anomaly or Kubernetes
+    signal (its start, if it has none) is QUIET_CLOSE or more before `at`.
+    """
+    at = _as_datetime(at)
+    start = _as_datetime(doc["start_time"])
+    last = max(significant_times(doc), default=start)
+    return at - start >= MAX_INCIDENT_DURATION or at - last >= QUIET_CLOSE
+
+
+def is_noise(doc: dict) -> bool:
+    """Only low/medium anomalies and no Kubernetes signals."""
+    return doc.get("max_severity") in ("low", "medium") and not doc.get("k8s_signals")
 
 
 class IncidentStore:
@@ -134,6 +166,16 @@ class IncidentStore:
             for d in self.collection.find(query, {"start_dt": 1, "end_dt": 1})
         ]
 
+    def incidents_near(self, start, end, window: timedelta, workload: str | None = None) -> list[dict]:
+        """Like incident_spans, but the documents (without the evidence/diagnosis payload)."""
+        lo, hi = _as_datetime(start) - window, _as_datetime(end) + window
+        query = {"start_dt": {"$lte": hi}, "end_dt": {"$gte": lo}}
+        if workload is not None:
+            query["workload"] = {"$in": [workload, None] if workload == DEFAULT_WORKLOAD else [workload]}
+        fields = {"_id": 0, "incident_id": 1, "start_time": 1, "end_time": 1, "start_dt": 1, "end_dt": 1,
+                  "max_severity": 1, "k8s_signals": 1, "anomalies.timestamp": 1, "anomalies.severity": 1}
+        return list(self.collection.find(query, fields))
+
     def _free_id(self, incident_id: str) -> str:
         """
         Incident ids are deterministic (workload + start bucket), so two
@@ -163,6 +205,8 @@ class IncidentStore:
         """
         doc = incident.to_dict()
         existing = self.find_overlapping(incident.start_time, incident.end_time, window, incident.workload)
+        if existing is not None and is_closed(existing, incident.start_time):
+            existing = None   # it has run its course: this activity is a new incident
         if existing is None and not create:
             return None, False
         if existing is None:
